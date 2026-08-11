@@ -1,0 +1,39 @@
+# TLS automatico via Let's Encrypt. Los dominios y el email salen del entorno
+# (ver .env.example), asi que este archivo no lleva nada especifico del
+# despliegue y puede versionarse tal cual.
+#
+# Requisitos antes de levantarlo:
+#   - Los tres dominios deben apuntar por A/AAAA a la IP del VPS.
+#   - Los puertos 80 y 443 deben estar abiertos (Caddy necesita el 80 para el
+#     desafio ACME).
+
+{
+	email {$ACME_EMAIL}
+}
+
+# --- API de usuarios (soundvibe-core) --------------------------------------
+{$CORE_DOMAIN} {
+	# Nunca exponer /internal/* al mundo: son rutas servicio-a-servicio, y
+	# aunque exigen la API key compartida, no hay razon para que sean
+	# alcanzables desde internet.
+	@internal path /internal/*
+	respond @internal 404
+
+	reverse_proxy 127.0.0.1:8091
+}
+
+# --- Signaling -------------------------------------------------------------
+{$SIGNALING_DOMAIN} {
+	reverse_proxy 127.0.0.1:8092
+}
+
+# --- LiveKit ---------------------------------------------------------------
+# El SFU necesita WebSocket para la señalizacion propia de WebRTC. Caddy pasa
+# los upgrades de protocolo sin configuracion extra.
+#
+# OJO: esto solo cubre el canal de señalizacion de LiveKit. El audio va por UDP
+# directo al VPS en el rango 50000-50200, que NO pasa por Caddy y tiene que
+# estar abierto en el firewall.
+{$LIVEKIT_DOMAIN} {
+	reverse_proxy 127.0.0.1:7880
+}

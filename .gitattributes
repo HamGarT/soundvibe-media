@@ -1,0 +1,8 @@
+# Este repo se edita en Windows y se despliega en Linux. Sin esto, un Makefile o
+# un .sh con CRLF falla en el VPS con errores incomprensibles.
+* text=auto eol=lf
+
+# Binarios: que git no los toque nunca.
+*.png binary
+*.jpg binary
+*.ico binary

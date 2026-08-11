@@ -1,0 +1,24 @@
+# Secretos: solo se versiona .env.example
+.env
+.env.*
+!.env.example
+
+# Binarios de build.
+#
+# OJO: aca NO va un patron `signaling` pelado. Sin barra, git lo aplica a
+# cualquier ruta, y se come el directorio signaling/ con todo el servicio
+# adentro. Los builds van a /out/ (ver Dockerfile), asi que basta con ignorar
+# eso.
+/bin/
+/out/
+*.exe
+
+# Artefactos de test y cobertura
+*.test
+coverage.out
+
+# Basura de editores/SO
+.DS_Store
+.idea/
+.vscode/
+.claude/

@@ -1,0 +1,37 @@
+# Configuracion del SFU de LiveKit.
+#
+# Las claves NO van aca: se pasan por la variable de entorno LIVEKIT_KEYS en el
+# compose, para no versionar secretos. El formato es "APIkey: secret".
+
+port: 7880
+
+rtc:
+  # Puerto TCP de fallback para clientes en redes que bloquean UDP (oficinas,
+  # algunas redes moviles). Sin esto, esos clientes simplemente no conectan.
+  tcp_port: 7881
+
+  # Rango UDP para el trafico de media. Es la razon por la que este contenedor
+  # corre con network_mode: host — el proxy de userland de Docker no maneja bien
+  # este rango y la latencia se degrada.
+  port_range_start: 50000
+  port_range_end: 50200
+
+  # Necesario en un VPS: LiveKit tiene que anunciar la IP publica en los
+  # candidatos ICE, no la IP interna del contenedor.
+  use_external_ip: true
+
+# Solo audio en este proyecto, asi que no hace falta configurar nada de video.
+room:
+  # Los rooms se crean solos cuando el host entra, y se cierran cuando queda
+  # vacio: no hay estado de rooms que administrar desde signaling.
+  auto_create: true
+  empty_timeout: 300
+  departure_timeout: 20
+  max_participants: 0 # 0 = sin limite duro; el limite real es el CPU del VPS
+
+logging:
+  level: info
+  json: true
+
+# Sin Redis: con un solo nodo no hace falta. Solo se agrega si algun dia hay
+# varias instancias de LiveKit que deban compartir estado de rooms.

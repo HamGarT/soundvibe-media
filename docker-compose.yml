@@ -1,0 +1,87 @@
+# Stack de media: SFU de LiveKit + servicio de signaling.
+#
+# Es un stack aparte del de soundvibe-core (dominios distintos, ciclos de vida
+# distintos) y no tiene nada que ver con Combiyki. Los dos stacks se comunican
+# por HTTP a traves de la red externa `soundvibe-core_soundvibe-core-net`.
+services:
+  livekit:
+    image: livekit/livekit-server:v1.8
+    container_name: sv-livekit
+    restart: unless-stopped
+    # host networking no es opcional en Linux: el trafico de media es UDP sobre
+    # un rango de puertos, y el proxy de userland de Docker lo degrada.
+    # En Docker Desktop (Windows/Mac) esto se ignora y el SFU no sera alcanzable
+    # desde fuera de la maquina; para desarrollo local del flujo de permisos no
+    # importa, porque signaling no habla con LiveKit.
+    network_mode: host
+    command: --config /etc/livekit.yaml
+    environment:
+      # Formato "APIkey: secret". Tiene que coincidir con LIVEKIT_API_KEY y
+      # LIVEKIT_API_SECRET de signaling.
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    deploy:
+      resources:
+        limits:
+          # El SFU es lo unico que escala con la cantidad de oyentes: se le deja
+          # el grueso del VPS.
+          cpus: "2.0"
+          memory: 2G
+
+  signaling:
+    build:
+      context: .
+      dockerfile: signaling/Dockerfile
+    container_name: sv-signaling
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      # Solo loopback: en produccion entra por Caddy. Ver la nota equivalente en
+      # soundvibe-core/docker-compose.yml.
+      - "127.0.0.1:8092:8092"
+    networks:
+      - media-net
+      # Se une a la red de soundvibe-core para poder resolver sv-core-api por
+      # nombre. Requiere que el stack de core este levantado primero.
+      - core-net
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
+
+  # Reverse proxy con TLS automatico. Los clientes moviles rechazan cleartext,
+  # asi que en produccion todo entra por aca: wss:// para LiveKit y https://
+  # para las dos APIs.
+  #
+  # Se activa con: docker compose --profile proxy up -d
+  caddy:
+    image: caddy:2-alpine
+    container_name: sv-caddy
+    profiles: ["proxy"]
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      SIGNALING_DOMAIN: ${SIGNALING_DOMAIN}
+      LIVEKIT_DOMAIN: ${LIVEKIT_DOMAIN}
+      CORE_DOMAIN: ${CORE_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+networks:
+  media-net:
+    driver: bridge
+  core-net:
+    # La crea el compose de soundvibe-core, con este nombre fijado
+    # explicitamente alla. Levantar ese stack primero.
+    external: true
+    name: soundvibe-core-net
+
+volumes:
+  caddy-data:
+  caddy-config:
