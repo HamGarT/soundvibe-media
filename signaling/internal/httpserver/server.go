@@ -16,19 +16,22 @@ import (
 
 	"github.com/soundvibe/media/signaling/internal/config"
 	"github.com/soundvibe/media/signaling/internal/core"
+	"github.com/soundvibe/media/signaling/internal/livekit"
 	"github.com/soundvibe/media/signaling/internal/rooms"
 )
 
 type Server struct {
-	core   *core.Client
-	minter *rooms.Minter
+	core    *core.Client
+	livekit *livekit.Client
+	minter  *rooms.Minter
 }
 
 // New arma el handler HTTP completo del servicio.
-func New(cfg config.Config, coreClient *core.Client) http.Handler {
+func New(cfg config.Config, coreClient *core.Client, livekitClient *livekit.Client) http.Handler {
 	s := &Server{
-		core:   coreClient,
-		minter: rooms.NewMinter(cfg.LiveKit),
+		core:    coreClient,
+		livekit: livekitClient,
+		minter:  rooms.NewMinter(cfg.LiveKit),
 	}
 
 	r := chi.NewRouter()
@@ -41,6 +44,13 @@ func New(cfg config.Config, coreClient *core.Client) http.Handler {
 
 	r.Get("/health", s.health)
 	r.Post("/rooms/join", s.join)
+
+	// Ruta servicio-a-servicio: la llama soundvibe-core cuando cambian los
+	// permisos. No la usa ningun cliente final.
+	r.Route("/internal", func(r chi.Router) {
+		r.Use(internalAPIKeyMiddleware(cfg.Core.APIKey))
+		r.Post("/revoke", s.revoke)
+	})
 
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, http.StatusNotFound, "not_found", "recurso no encontrado")

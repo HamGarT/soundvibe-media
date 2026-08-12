@@ -41,6 +41,11 @@ services:
       # Solo loopback: en produccion entra por Caddy. Ver la nota equivalente en
       # soundvibe-core/docker-compose.yml.
       - "127.0.0.1:8092:8092"
+    extra_hosts:
+      # LiveKit corre en network_mode: host, asi que desde este contenedor no se
+      # lo resuelve por nombre de servicio. Esto da un nombre para el gateway del
+      # host, que es lo que usa LIVEKIT_API_URL para expulsar participantes.
+      - "host.docker.internal:host-gateway"
     networks:
       - media-net
       # Se une a la red de soundvibe-core para poder resolver sv-core-api por

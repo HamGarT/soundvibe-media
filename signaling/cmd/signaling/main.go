@@ -19,6 +19,7 @@ import (
 	"github.com/soundvibe/media/signaling/internal/config"
 	"github.com/soundvibe/media/signaling/internal/core"
 	"github.com/soundvibe/media/signaling/internal/httpserver"
+	"github.com/soundvibe/media/signaling/internal/livekit"
 )
 
 func main() {
@@ -40,6 +41,12 @@ func run() error {
 	defer stop()
 
 	coreClient := core.New(cfg.Core)
+	livekitClient := livekit.New(cfg.LiveKit)
+
+	if !livekitClient.Enabled() {
+		slog.Warn("LIVEKIT_API_URL sin configurar: la revocacion en vivo queda deshabilitada, " +
+			"un oyente que pierde el permiso sigue conectado hasta que se va o expira su sesion")
+	}
 
 	// No se aborta el arranque si core no responde todavia: los dos stacks se
 	// levantan por separado y el orden no esta garantizado. Se avisa y se sigue;
@@ -55,7 +62,7 @@ func run() error {
 
 	srv := &http.Server{
 		Addr:              net.JoinHostPort("", cfg.Port),
-		Handler:           httpserver.New(cfg, coreClient),
+		Handler:           httpserver.New(cfg, coreClient, livekitClient),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       20 * time.Second,
 		WriteTimeout:      20 * time.Second,

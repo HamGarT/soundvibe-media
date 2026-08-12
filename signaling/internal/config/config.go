@@ -29,7 +29,14 @@ type CoreConfig struct {
 type LiveKitConfig struct {
 	// URL es la que se le entrega al cliente para conectarse al SFU
 	// (wss://... en produccion).
-	URL       string
+	URL string
+	// APIURL es la URL HTTP de la API de administracion del SFU, que se usa
+	// para expulsar participantes. Es distinta de URL: la de administracion no
+	// pasa por el reverse proxy ni la ve ningun cliente.
+	//
+	// Si queda vacia, la revocacion en vivo esta deshabilitada y el servicio
+	// arranca igual, avisando en el log.
+	APIURL    string
 	APIKey    string
 	APISecret string
 	// TokenTTL es la vida del token de acceso a LiveKit. Corta a proposito: el
@@ -47,6 +54,7 @@ func Load() (Config, error) {
 		},
 		LiveKit: LiveKitConfig{
 			URL:       os.Getenv("LIVEKIT_URL"),
+			APIURL:    strings.TrimRight(os.Getenv("LIVEKIT_API_URL"), "/"),
 			APIKey:    os.Getenv("LIVEKIT_API_KEY"),
 			APISecret: os.Getenv("LIVEKIT_API_SECRET"),
 		},

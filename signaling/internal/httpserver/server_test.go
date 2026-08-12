@@ -14,6 +14,7 @@ import (
 	"github.com/soundvibe/media/signaling/internal/config"
 	"github.com/soundvibe/media/signaling/internal/core"
 	"github.com/soundvibe/media/signaling/internal/httpserver"
+	"github.com/soundvibe/media/signaling/internal/livekit"
 )
 
 const (
@@ -36,6 +37,11 @@ type fakeCore struct {
 	introspectBody   string
 	permissionStatus int
 	permissionBody   string
+
+	// permissionByListener permite responder distinto segun el oyente, que es lo
+	// que necesita la revocacion: en un mismo room unos siguen autorizados y
+	// otros no. Si esta nil se usa permissionStatus/permissionBody.
+	permissionByListener map[string]bool
 
 	// requests cuenta las llamadas recibidas, para verificar que el permiso se
 	// consulta siempre y no se saltea.
@@ -86,6 +92,18 @@ func newFakeCore(t *testing.T) *fakeCore {
 			_, _ = w.Write([]byte(`{"error":{"code":"unauthorized","message":"no"}}`))
 			return
 		}
+
+		if f.permissionByListener != nil {
+			if allowed := f.permissionByListener[f.lastListener]; allowed {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"allowed":true,"reason":"default_all_friends"}`))
+			} else {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"allowed":false,"reason":"explicitly_excluded"}`))
+			}
+			return
+		}
+
 		w.WriteHeader(f.permissionStatus)
 		_, _ = w.Write([]byte(f.permissionBody))
 	})
@@ -96,19 +114,37 @@ func newFakeCore(t *testing.T) *fakeCore {
 }
 
 type harness struct {
-	t      *testing.T
-	server *httptest.Server
-	core   *fakeCore
+	t       *testing.T
+	server  *httptest.Server
+	core    *fakeCore
+	livekit *fakeLiveKit
 }
 
+// newHarness arma el servicio sin API de LiveKit configurada, que es el caso
+// donde la revocacion en vivo esta deshabilitada.
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 
 	fake := newFakeCore(t)
-	return newHarnessWithCoreURL(t, fake, fake.server.URL)
+	return newHarnessWith(t, fake, fake.server.URL, nil)
+}
+
+// newHarnessWithLiveKit arma el servicio con un SFU falso, para los tests de
+// revocacion.
+func newHarnessWithLiveKit(t *testing.T) *harness {
+	t.Helper()
+
+	fake := newFakeCore(t)
+	fakeLK := newFakeLiveKit(t)
+	return newHarnessWith(t, fake, fake.server.URL, fakeLK)
 }
 
 func newHarnessWithCoreURL(t *testing.T, fake *fakeCore, coreURL string) *harness {
+	t.Helper()
+	return newHarnessWith(t, fake, coreURL, nil)
+}
+
+func newHarnessWith(t *testing.T, fake *fakeCore, coreURL string, fakeLK *fakeLiveKit) *harness {
 	t.Helper()
 
 	cfg := config.Config{
@@ -127,10 +163,15 @@ func newHarnessWithCoreURL(t *testing.T, fake *fakeCore, coreURL string) *harnes
 		},
 	}
 
-	server := httptest.NewServer(httpserver.New(cfg, core.New(cfg.Core)))
+	if fakeLK != nil {
+		cfg.LiveKit.APIURL = fakeLK.server.URL
+	}
+
+	server := httptest.NewServer(
+		httpserver.New(cfg, core.New(cfg.Core), livekit.New(cfg.LiveKit)))
 	t.Cleanup(server.Close)
 
-	return &harness{t: t, server: server, core: fake}
+	return &harness{t: t, server: server, core: fake, livekit: fakeLK}
 }
 
 type response struct {

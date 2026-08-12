@@ -219,23 +219,59 @@ Con los dos stacks levantados de verdad:
 | Access token invalido | 401 |
 | **core apagado** | 503, sin token, y `/health` marca `degraded` |
 | core vuelve | recuperacion automatica en ~1s, sin reiniciar signaling |
+| Host excluye a un oyente **mientras escucha** | Solo ese oyente expulsado del SFU; los demas siguen |
+| Host apaga el compartir con dos oyentes | Los dos expulsados, el host nunca |
+| Se rompe la amistad | Expulsion en **ambos** rooms, motivo `not_friends` |
+| signaling apagado al cambiar permisos | El cambio se guarda igual en core; solo no hay expulsion |
 
-## Pendiente: revocacion en vivo
+## Revocacion en vivo
 
-Si un host apaga el compartir **mientras** alguien lo escucha, no pasa nada: el
-token de LiveKit ya fue emitido y el participante sigue conectado. El permiso
-solo se consulta al entrar.
+El permiso se valida al entrar al room. Sin nada mas, quien entro legitimamente
+seguiria escuchando aunque despues le saquen el permiso — y "apague el compartir
+y me siguieron escuchando" se percibe como una traicion, no como un bug.
 
-Opciones, cuando se decida atacarlo:
+### `POST /internal/revoke`
 
-1. Que el cliente renueve el token cada pocos minutos y signaling reconsulte a
-   core (simple, ventana de exposicion = TTL del token).
-2. Que signaling llame a `RemoveParticipant` de la API de LiveKit cuando cambian
-   los permisos, lo que implica que core avise a signaling en `PATCH /users/me` y
-   al tocar excepciones (inmediato, mas piezas moviles).
+Requiere `X-Internal-Api-Key`. Lo llama **soundvibe-core** cuando cambia algo que
+afecta los permisos de un host:
 
-Vale decidirlo antes de publicar: "apague el compartir y me siguieron
-escuchando" se percibe como una traicion, no como un bug.
+```json
+{ "host_id": "<uuid del host>" }
+→ { "room": "listen:<uuid>", "checked": 2, "evicted": 1, "removed": ["<uuid>"] }
+```
+
+**El diseño clave: core no dice a quien echar.** Este endpoint lista a los
+presentes en el room y le vuelve a preguntar a core por cada uno. Asi la politica
+vive en un solo lugar y el mismo endpoint sirve para cualquier motivo de
+revocacion sin enterarse de cual fue: `share_default` a `nobody`, una excepcion
+nueva, o una amistad que se rompe.
+
+Se expulsa con `RemoveParticipant` de la API de administracion del SFU. No se
+setea `RevokeTokenTs`: LiveKit por defecto invalida los tokens emitidos antes de
+ahora, que es justo lo que hace falta para que el expulsado no vuelva a entrar
+con el mismo token que todavia no expiro.
+
+| Status | Que paso |
+|---|---|
+| 200 | Se reviso el room; `evicted` dice a cuantos se echo |
+| 400 | `host_id` invalido |
+| 401 | Falta o no coincide la API key |
+| 501 | `LIVEKIT_API_URL` sin configurar: la revocacion esta deshabilitada |
+| 502 | No se pudo consultar al SFU |
+
+### Como falla
+
+| Situacion | Comportamiento |
+|---|---|
+| No se puede preguntar a core por un oyente | **No se lo expulsa.** Echar gente por un error de red seria peor que esperar; el permiso se revalida en el proximo join |
+| El SFU rechaza una expulsion | Se registra y se sigue con los demas; `evicted` refleja solo los efectivos |
+| `LIVEKIT_API_URL` vacia | 501, y core lo registra como problema de despliegue sin reintentar |
+| El room esta vacio | 200 con `checked: 0`. Es el caso mas comun |
+
+Notar que aca **no** se falla cerrado, al contrario que en `/rooms/join`. Es
+deliberado: en el join, la duda significa no dar acceso; en la revocacion, la
+duda significa no cortarle el audio a alguien que probablemente tiene derecho a
+estar. El costo de equivocarse es asimetrico en direcciones opuestas.
 
 ## Fuera de alcance
 
