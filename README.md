@@ -55,8 +55,13 @@ signaling/
 
 ## Puesta en marcha
 
-Requisitos: Docker. **El stack de soundvibe-core tiene que estar levantado
-primero** — este compose se engancha a su red para resolver `sv-core-api`.
+Para desplegar en el VPS, seguir el runbook completo en
+**[soundvibe-core/DEPLOY.md](../soundvibe-core/DEPLOY.md)**, que cubre los dos
+stacks en orden, TLS incluido.
+
+Para desarrollo local, lo que sigue. Requisitos: Docker. **El stack de
+soundvibe-core tiene que estar levantado primero** — este compose se engancha a
+su red para resolver `sv-core-api`.
 
 ```bash
 # 1. core primero
