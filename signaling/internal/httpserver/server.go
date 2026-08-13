@@ -53,6 +53,9 @@ func New(cfg config.Config, coreClient *core.Client, livekitClient *livekit.Clie
 
 		r.Get("/health", s.health)
 		r.Post("/rooms/join", s.join)
+		// Que amigos estan transmitiendo ahora, ya filtrados por permiso. Es lo
+		// que pinta la pantalla de amigos.
+		r.Get("/rooms/active", s.active)
 
 		// Ruta servicio-a-servicio: la llama soundvibe-core cuando cambian los
 		// permisos. No la usa ningun cliente final.
