@@ -36,9 +36,17 @@ type LiveKitConfig struct {
 	//
 	// Si queda vacia, la revocacion en vivo esta deshabilitada y el servicio
 	// arranca igual, avisando en el log.
-	APIURL    string
-	APIKey    string
-	APISecret string
+	APIURL string
+	// InternalURL es por donde ESTE servicio se conecta al SFU para publicar el
+	// audio del host. Distinta de URL: aquella es la publica, y alcanzarla desde
+	// dentro del contenedor obliga a salir del VPS, resolver DNS publico y volver
+	// a entrar por el reverse proxy — un rodeo que en la mayoria de las redes
+	// directamente no funciona (hairpin NAT).
+	//
+	// Si queda vacia se usa URL, que es lo que hacia antes.
+	InternalURL string
+	APIKey      string
+	APISecret   string
 	// TokenTTL es la vida del token de acceso a LiveKit. Corta a proposito: el
 	// token solo hace falta para entrar al room.
 	TokenTTL time.Duration
@@ -53,10 +61,11 @@ func Load() (Config, error) {
 			APIKey:  os.Getenv("INTERNAL_API_KEY"),
 		},
 		LiveKit: LiveKitConfig{
-			URL:       os.Getenv("LIVEKIT_URL"),
-			APIURL:    strings.TrimRight(os.Getenv("LIVEKIT_API_URL"), "/"),
-			APIKey:    os.Getenv("LIVEKIT_API_KEY"),
-			APISecret: os.Getenv("LIVEKIT_API_SECRET"),
+			URL:         os.Getenv("LIVEKIT_URL"),
+			APIURL:      strings.TrimRight(os.Getenv("LIVEKIT_API_URL"), "/"),
+			InternalURL: strings.TrimRight(os.Getenv("LIVEKIT_INTERNAL_URL"), "/"),
+			APIKey:      os.Getenv("LIVEKIT_API_KEY"),
+			APISecret:   os.Getenv("LIVEKIT_API_SECRET"),
 		},
 	}
 
@@ -90,6 +99,12 @@ func Load() (Config, error) {
 	if len(cfg.LiveKit.APISecret) < 32 {
 		missing = append(missing, "LIVEKIT_API_SECRET (minimo 32 caracteres)")
 	}
+	// Sin URL interna se usa la publica. Funciona en desarrollo local, pero en el
+	// VPS suele fallar: ver el comentario de InternalURL.
+	if cfg.LiveKit.InternalURL == "" {
+		cfg.LiveKit.InternalURL = cfg.LiveKit.URL
+	}
+
 	if len(missing) > 0 {
 		return Config{}, fmt.Errorf("configuracion invalida, falta o es debil: %s",
 			strings.Join(missing, ", "))

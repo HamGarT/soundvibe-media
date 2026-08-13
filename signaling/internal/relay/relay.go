@@ -119,9 +119,12 @@ func (r *Relay) Start(hostID uuid.UUID, username string) (*Session, error) {
 		return nil, fmt.Errorf("no se pudo crear el track de audio: %w", err)
 	}
 
-	room, err := lksdk.ConnectToRoomWithToken(r.cfg.URL, token.Token, nil)
+	// InternalURL, no URL: este proceso habla con el SFU por la red de Docker. La
+	// publica obligaria a salir del VPS y volver por el reverse proxy.
+	room, err := lksdk.ConnectToRoomWithToken(r.cfg.InternalURL, token.Token, nil)
 	if err != nil {
-		return nil, fmt.Errorf("no se pudo conectar al room %s: %w", token.Room, err)
+		return nil, fmt.Errorf("no se pudo conectar al room %s en %s: %w",
+			token.Room, r.cfg.InternalURL, err)
 	}
 
 	_, err = room.LocalParticipant.PublishTrack(track, &lksdk.TrackPublicationOptions{

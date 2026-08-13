@@ -162,6 +162,13 @@ razon por la que publicar desde el servidor sale mejor.
 Una sesion por host: si el host reconecta, la anterior se cierra antes de abrir
 la nueva. Dos publicadores con la misma identidad en el mismo room se pisan.
 
+**`LIVEKIT_INTERNAL_URL` es obligatoria en el VPS.** El relay entra al room como
+un cliente mas, y para eso se conecta al SFU. Si usa la URL publica
+(`LIVEKIT_URL`) tiene que salir del VPS, resolver DNS publico y volver a entrar
+por el reverse proxy; en la mayoria de las redes eso no funciona y el error es
+`could not establish signal connection`. Con `ws://sv-livekit:7880` va por la red
+de Docker, directo.
+
 ### `GET /health`
 
 Sin auth. Responde 200 siempre que el proceso este vivo, e informa aparte si core
