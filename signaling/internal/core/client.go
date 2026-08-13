@@ -178,6 +178,113 @@ func (c *Client) CanListen(ctx context.Context, hostID, listenerID uuid.UUID) (a
 	}
 }
 
+// Friend es un amigo aceptado del usuario, tal como lo devuelve core.
+type Friend struct {
+	UserID      uuid.UUID `json:"user_id"`
+	Username    string    `json:"username"`
+	DisplayName *string   `json:"display_name"`
+	AvatarURL   *string   `json:"avatar_url"`
+}
+
+// Friends lista los amigos aceptados del usuario duenio de `accessToken`.
+//
+// Va con el token del propio usuario y no con la API key interna a proposito:
+// core ya expone /friendships autenticado, y usarlo evita agregar un endpoint
+// interno que devuelva la lista de amigos de cualquiera.
+func (c *Client) Friends(ctx context.Context, accessToken string) ([]Friend, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/friendships", nil)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	defer drainAndClose(resp)
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		var body struct {
+			Friends []Friend `json:"friends"`
+		}
+		if err := decode(resp, &body); err != nil {
+			return nil, err
+		}
+		return body.Friends, nil
+
+	case http.StatusUnauthorized:
+		return nil, ErrUnauthenticated
+
+	default:
+		return nil, fmt.Errorf("%w: core respondio %d en /friendships", ErrUnavailable, resp.StatusCode)
+	}
+}
+
+// CanListenBatch resuelve de una vez a cuales de `hosts` puede escuchar
+// `listener`, con una sola llamada en vez de una por host.
+//
+// Devuelve solo los permitidos: quien llama arma la pantalla de amigos activos
+// con eso, y los denegados no tienen por que aparecer ni siquiera como ausentes.
+func (c *Client) CanListenBatch(ctx context.Context, listenerID uuid.UUID, hosts []uuid.UUID) ([]uuid.UUID, error) {
+	if len(hosts) == 0 {
+		return nil, nil
+	}
+
+	payload := struct {
+		Listener uuid.UUID   `json:"listener"`
+		Hosts    []uuid.UUID `json:"hosts"`
+	}{Listener: listenerID, Hosts: hosts}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.baseURL+"/internal/listening-permissions", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Api-Key", c.apiKey)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	defer drainAndClose(resp)
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		var decoded struct {
+			Results []struct {
+				HostID  uuid.UUID `json:"host_id"`
+				Allowed bool      `json:"allowed"`
+			} `json:"results"`
+		}
+		if err := decode(resp, &decoded); err != nil {
+			return nil, err
+		}
+		allowed := make([]uuid.UUID, 0, len(decoded.Results))
+		for _, result := range decoded.Results {
+			if result.Allowed {
+				allowed = append(allowed, result.HostID)
+			}
+		}
+		return allowed, nil
+
+	case http.StatusUnauthorized:
+		return nil, fmt.Errorf(
+			"%w: core rechazo nuestra INTERNAL_API_KEY (revisar que coincida en los dos servicios)",
+			ErrUnavailable)
+
+	default:
+		return nil, fmt.Errorf("%w: core respondio %d", ErrUnavailable, resp.StatusCode)
+	}
+}
+
 // Health consulta el /health de core. Solo se usa para diagnostico.
 func (c *Client) Health(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/health", nil)
