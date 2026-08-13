@@ -17,8 +17,9 @@ import (
 
 // joinRequest es el body de POST /rooms/join.
 //
-// host_id vacio significa "mi propio room": el usuario quiere empezar a
-// transmitir su actividad.
+// host_id es el dueno del room al que se quiere entrar a escuchar. Ya no se
+// admite vacio: transmitir no se pide por aca, se abre el WebSocket de
+// GET /rooms/broadcast.
 type joinRequest struct {
 	HostID string `json:"host_id"`
 }
@@ -49,21 +50,31 @@ func (s *Server) join(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sin host_id, el usuario abre su propio room como host.
-	hostID := identity.UserID
-	if raw := strings.TrimSpace(in.HostID); raw != "" {
-		parsed, parseErr := uuid.Parse(raw)
-		if parseErr != nil {
-			fail(w, r, http.StatusBadRequest, "bad_request", "host_id debe ser un UUID valido")
-			return
-		}
-		hostID = parsed
+	raw := strings.TrimSpace(in.HostID)
+	if raw == "" {
+		fail(w, r, http.StatusBadRequest, "bad_request",
+			"host_id es obligatorio: para transmitir se usa GET /rooms/broadcast")
+		return
+	}
+	hostID, parseErr := uuid.Parse(raw)
+	if parseErr != nil {
+		fail(w, r, http.StatusBadRequest, "bad_request", "host_id debe ser un UUID valido")
+		return
 	}
 
-	role := rooms.RoleListener
+	// Entrar al room propio ya no tiene sentido, y ademas rompe: desde que el
+	// audio lo publica el relay, este servicio ya esta dentro del room con la
+	// identidad del host. Un segundo participante con la misma identidad hace que
+	// LiveKit eche a uno de los dos, y el que se caiga puede ser la transmision.
 	if hostID == identity.UserID {
-		role = rooms.RoleHost
+		fail(w, r, http.StatusConflict, "own_room",
+			"no puedes entrar a tu propio room: tu audio lo publica el servidor mientras transmites")
+		return
 	}
+
+	// El unico publicador del room es el relay. Todo token que se firma aca es de
+	// oyente, sin permiso de publicar.
+	role := rooms.RoleListener
 
 	// Se consulta el permiso incluso cuando el host es uno mismo: core responde
 	// `self` en ese caso, y dejar la decision siempre del mismo lado evita que

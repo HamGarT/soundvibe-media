@@ -99,10 +99,13 @@ make logs-livekit  # logs del SFU
 Requiere `Authorization: Bearer <access token de soundvibe-core>`.
 
 ```jsonc
-// body (opcional)
+// body (obligatorio)
 { "host_id": "uuid del host que se quiere escuchar" }
-// sin body, o sin host_id: el usuario abre SU PROPIO room como host
 ```
+
+Solo emite tokens de **oyente**. Transmitir no se pide por aca: el host abre el
+WebSocket de `GET /rooms/broadcast` y el que entra al room a publicar es este
+servicio, con la identidad del host.
 
 Respuesta 200:
 
@@ -120,13 +123,44 @@ Respuesta 200:
 | Status | Codigo | Que paso |
 |---|---|---|
 | 200 | — | Token emitido |
-| 400 | `bad_request` | `host_id` no es un UUID, o el body no es JSON |
+| 400 | `bad_request` | Falta `host_id`, no es un UUID, o el body no es JSON |
 | 401 | `unauthorized` | Falta el access token, o es invalido/expiro |
 | 403 | `listening_not_allowed` | core dijo que no |
+| 409 | `own_room` | Es tu propio room: ahi ya esta el relay con tu identidad |
 | 503 | `core_unavailable` | No se pudo consultar a core: se deniega |
 
 El cliente conecta a `livekit_url` con `token` usando el SDK de LiveKit. El
 token dura 10 minutos por defecto y solo hace falta para **entrar** al room.
+
+### `GET /rooms/broadcast` (WebSocket)
+
+Por aca el host manda **su propio audio ya codificado en Opus**, y este servicio
+lo publica en su room. Cada mensaje binario es un frame de Opus de 20 ms, que se
+reenvia tal cual: ni aca ni en el SFU se transcodifica nada.
+
+Autenticacion por header `Authorization: Bearer <access token de core>` en el
+handshake — el cliente nativo (OkHttp) puede mandarlo, un navegador no podria.
+No se consulta el permiso de escucha: el host publica su propia actividad, y
+quien decide si otro puede oirla es `/rooms/join` del lado del oyente.
+
+**Por que el audio pasa por aca en vez de salir directo del telefono al SFU.**
+El SDK de Android solo publica audio a traves de un `AudioDeviceModule`, y el
+suyo (`JavaAudioDeviceModule`) **siempre crea un `WebRtcAudioRecord`**: abre el
+microfono, sin opcion de desactivarlo. Escribir un ADM propio no alcanza con
+Kotlin, porque `getNativeAudioDeviceModulePointer()` tiene que devolver un
+puntero a un `webrtc::AudioDeviceModule` de C++. Una app de musica que enciende
+el indicador de microfono mientras transmite se lee como que espia al usuario,
+asi que el telefono no habla WebRTC en ningun momento: codifica Opus con
+`MediaCodec` y lo manda por este socket.
+
+El track se publica con `DisableDTX` y `Stereo` en true. DTX corta la
+transmision en los silencios, que en una cancion son parte de la cancion; sin
+`Stereo` el track se anuncia mono y se pierde la mitad de la mezcla. Ninguna de
+las dos existe como opcion de publicacion en el SDK de Android, lo que es otra
+razon por la que publicar desde el servidor sale mejor.
+
+Una sesion por host: si el host reconecta, la anterior se cierra antes de abrir
+la nueva. Dos publicadores con la misma identidad en el mismo room se pisan.
 
 ### `GET /health`
 

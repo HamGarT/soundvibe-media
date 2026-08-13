@@ -17,6 +17,7 @@ import (
 	"github.com/soundvibe/media/signaling/internal/config"
 	"github.com/soundvibe/media/signaling/internal/core"
 	"github.com/soundvibe/media/signaling/internal/livekit"
+	"github.com/soundvibe/media/signaling/internal/relay"
 	"github.com/soundvibe/media/signaling/internal/rooms"
 )
 
@@ -24,14 +25,17 @@ type Server struct {
 	core    *core.Client
 	livekit *livekit.Client
 	minter  *rooms.Minter
+	relay   *relay.Relay
 }
 
 // New arma el handler HTTP completo del servicio.
 func New(cfg config.Config, coreClient *core.Client, livekitClient *livekit.Client) http.Handler {
+	minter := rooms.NewMinter(cfg.LiveKit)
 	s := &Server{
 		core:    coreClient,
 		livekit: livekitClient,
-		minter:  rooms.NewMinter(cfg.LiveKit),
+		minter:  minter,
+		relay:   relay.New(cfg.LiveKit, minter),
 	}
 
 	r := chi.NewRouter()
@@ -40,17 +44,28 @@ func New(cfg config.Config, coreClient *core.Client, livekitClient *livekit.Clie
 	r.Use(middleware.RealIP)
 	r.Use(requestLogger)
 	r.Use(middleware.Recoverer)
-	r.Use(middleware.Timeout(20 * time.Second))
 
-	r.Get("/health", s.health)
-	r.Post("/rooms/join", s.join)
+	// El timeout se aplica por grupo y no a todo el router: una transmision es
+	// una conexion que dura lo que dure la sesion de escucha, y un
+	// middleware.Timeout global la cortaria a los 20 segundos.
+	r.Group(func(r chi.Router) {
+		r.Use(middleware.Timeout(20 * time.Second))
 
-	// Ruta servicio-a-servicio: la llama soundvibe-core cuando cambian los
-	// permisos. No la usa ningun cliente final.
-	r.Route("/internal", func(r chi.Router) {
-		r.Use(internalAPIKeyMiddleware(cfg.Core.APIKey))
-		r.Post("/revoke", s.revoke)
+		r.Get("/health", s.health)
+		r.Post("/rooms/join", s.join)
+
+		// Ruta servicio-a-servicio: la llama soundvibe-core cuando cambian los
+		// permisos. No la usa ningun cliente final.
+		r.Route("/internal", func(r chi.Router) {
+			r.Use(internalAPIKeyMiddleware(cfg.Core.APIKey))
+			r.Post("/revoke", s.revoke)
+		})
 	})
+
+	// El host manda su audio ya codificado por aca. Sin timeout, por lo de
+	// arriba. La autenticacion va por header Authorization, que el cliente nativo
+	// (OkHttp) si puede mandar en el handshake — un navegador no podria.
+	r.Get("/rooms/broadcast", s.broadcast)
 
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, http.StatusNotFound, "not_found", "recurso no encontrado")

@@ -285,26 +285,43 @@ func TestJoinAsListenerWhenAllowed(t *testing.T) {
 	}
 }
 
-func TestJoinWithoutHostIDOpensOwnRoomAsHost(t *testing.T) {
+func TestJoinRequiresHostID(t *testing.T) {
+	// Antes, sin host_id se abria el room propio como host. Ya no: transmitir se
+	// pide por GET /rooms/broadcast, y el que publica es el relay.
 	h := newHarness(t)
 
-	var body tokenBody
-	h.join(nil, true).expectStatus(http.StatusOK).decode(&body)
+	h.join(nil, true).expectStatus(http.StatusBadRequest)
+}
 
-	if body.Role != "host" {
-		t.Errorf("role = %q, se esperaba host", body.Role)
-	}
-	if want := "listen:" + h.core.userID.String(); body.Room != want {
-		t.Errorf("room = %q, se esperaba el room propio %q", body.Room, want)
+func TestJoinRefusesYourOwnRoom(t *testing.T) {
+	// El relay ya esta dentro del room con la identidad del host. Dejar entrar al
+	// telefono con esa misma identidad haria que LiveKit echara a uno de los dos,
+	// y podria tocarle a la transmision.
+	h := newHarness(t)
+
+	body := map[string]any{"host_id": h.core.userID.String()}
+	h.join(body, true).expectStatus(http.StatusConflict)
+}
+
+func TestJoinOnlyIssuesListenerTokens(t *testing.T) {
+	h := newHarness(t)
+	hostID := uuid.New()
+
+	var body tokenBody
+	h.join(map[string]any{"host_id": hostID.String()}, true).
+		expectStatus(http.StatusOK).decode(&body)
+
+	if body.Role != "listener" {
+		t.Errorf("role = %q, se esperaba listener", body.Role)
 	}
 }
 
 func TestJoinAlwaysAsksCoreForPermission(t *testing.T) {
 	h := newHarness(t)
 
-	// Incluso abriendo el room propio: dejar la decision siempre del mismo lado
-	// evita que esta condicion se desincronice de la de core.
-	h.join(nil, true).expectStatus(http.StatusOK)
+	// Nunca se firma un token sin preguntarle a core, aunque el permiso parezca
+	// obvio: la politica vive de un solo lado.
+	h.join(map[string]any{"host_id": uuid.NewString()}, true).expectStatus(http.StatusOK)
 
 	if h.core.introspectCalls != 1 {
 		t.Errorf("introspectCalls = %d, se esperaba 1", h.core.introspectCalls)
