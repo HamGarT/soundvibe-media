@@ -95,6 +95,14 @@ func (s *Server) broadcast(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		// Cada ~10 s de audio. Es la unica prueba de que el telefono esta mandando
+		// algo: "transmision iniciada" solo dice que el socket se abrio, y un
+		// stream mudo se ve exactamente igual que uno que funciona.
+		if frames := session.Frames(); frames > 0 && frames%500 == 0 {
+			slog.InfoContext(ctx, "recibiendo audio",
+				"host", identity.UserID, "frames", frames)
+		}
+
 		if writeErr := session.WriteFrame(data); writeErr != nil {
 			if errors.Is(writeErr, relay.ErrSessionClosed) {
 				_ = conn.Close(websocket.StatusNormalClosure, "")
