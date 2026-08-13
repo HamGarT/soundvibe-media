@@ -4,6 +4,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -82,6 +83,7 @@ func Load() (Config, error) {
 	cfg.LiveKit.TokenTTL = time.Duration(tokenTTL) * time.Minute
 
 	var missing []string
+	var warnings []string
 	if cfg.Core.BaseURL == "" {
 		missing = append(missing, "CORE_BASE_URL")
 	}
@@ -105,9 +107,29 @@ func Load() (Config, error) {
 		cfg.LiveKit.InternalURL = cfg.LiveKit.URL
 	}
 
+	// ws:// hacia un host publico no funciona en Android: bloquea el trafico en
+	// claro por defecto (network security policy) y el SDK de LiveKit falla con
+	// "CLEARTEXT communication not permitted". El sintoma es que el oyente entra
+	// al room y no escucha nada, sin ningun error del lado del servidor.
+	//
+	// Es un aviso y no un error: en desarrollo local ws://localhost es correcto.
+	if strings.HasPrefix(cfg.LiveKit.URL, "ws://") &&
+		!strings.Contains(cfg.LiveKit.URL, "localhost") &&
+		!strings.Contains(cfg.LiveKit.URL, "127.0.0.1") &&
+		!strings.Contains(cfg.LiveKit.URL, "10.0.2.2") {
+		warnings = append(warnings, fmt.Sprintf(
+			"LIVEKIT_URL usa ws:// contra un host publico (%s). Android rechaza el "+
+				"trafico en claro y el oyente no va a escuchar nada. Deberia ser wss://",
+			cfg.LiveKit.URL))
+	}
+
 	if len(missing) > 0 {
 		return Config{}, fmt.Errorf("configuracion invalida, falta o es debil: %s",
 			strings.Join(missing, ", "))
+	}
+
+	for _, w := range warnings {
+		slog.Warn("configuracion sospechosa", "aviso", w)
 	}
 
 	return cfg, nil
