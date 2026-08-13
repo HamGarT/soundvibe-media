@@ -166,8 +166,11 @@ la nueva. Dos publicadores con la misma identidad en el mismo room se pisan.
 un cliente mas, y para eso se conecta al SFU. Si usa la URL publica
 (`LIVEKIT_URL`) tiene que salir del VPS, resolver DNS publico y volver a entrar
 por el reverse proxy; en la mayoria de las redes eso no funciona y el error es
-`could not establish signal connection`. Con `ws://sv-livekit:7880` va por la red
-de Docker, directo.
+`could not establish signal connection`.
+
+El valor correcto es `ws://host.docker.internal:7880`, el mismo camino que ya usa
+`LIVEKIT_API_URL`. **No** el nombre del contenedor: el SFU corre con
+`network_mode: host`, asi que no hay ningun `sv-livekit` en el DNS de Docker.
 
 ### `GET /health`
 

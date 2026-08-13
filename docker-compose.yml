@@ -11,8 +11,13 @@ services:
     # host networking no es opcional en Linux: el trafico de media es UDP sobre
     # un rango de puertos, y el proxy de userland de Docker lo degrada.
     # En Docker Desktop (Windows/Mac) esto se ignora y el SFU no sera alcanzable
-    # desde fuera de la maquina; para desarrollo local del flujo de permisos no
-    # importa, porque signaling no habla con LiveKit.
+    # desde fuera de la maquina.
+    #
+    # Consecuencia importante: al estar en la red del host, este contenedor NO
+    # tiene nombre en el DNS de Docker. signaling lo alcanza por
+    # host.docker.internal (ver LIVEKIT_INTERNAL_URL y LIVEKIT_API_URL), no por
+    # `sv-livekit`. Desde que existe el relay, signaling SI habla con LiveKit —
+    # antes no lo hacia, y este comentario decia lo contrario.
     network_mode: host
     command: --config /etc/livekit.yaml
     environment:
