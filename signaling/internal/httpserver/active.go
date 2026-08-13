@@ -106,7 +106,10 @@ func (s *Server) active(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	slog.DebugContext(r.Context(), "amigos activos",
+	// Info, no Debug: el nivel por defecto de slog es Info, asi que en Debug esta
+	// linea no se ve nunca — y es justo la que dice por que la pantalla de amigos
+	// salio vacia (nadie transmite / no son amigos / permiso denegado).
+	slog.InfoContext(r.Context(), "amigos activos",
 		"listener", identity.UserID, "transmitiendo", len(broadcasting),
 		"amigos_activos", len(candidates), "permitidos", len(hosts))
 
