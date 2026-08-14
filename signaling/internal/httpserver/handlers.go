@@ -104,7 +104,7 @@ func (s *Server) join(w http.ResponseWriter, r *http.Request) {
 	//
 	// Y antes de responder, no despues: el oyente se conecta al SFU apenas recibe
 	// este token, asi que el audio tiene que estar ya en camino cuando llegue.
-	s.audience.Requested(r.Context(), hostID)
+	s.audience.Requested(r.Context(), hostID, identity.UserID)
 
 	slog.InfoContext(r.Context(), "join permitido",
 		"listener", identity.UserID, "host", hostID, "role", role, "reason", reason)

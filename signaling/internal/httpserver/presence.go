@@ -108,15 +108,21 @@ func (s *Server) presence(w http.ResponseWriter, r *http.Request) {
 				if !open {
 					return
 				}
-				payload := `{"type":"` + string(cmd) + `"}`
-				if err := conn.Write(ctx, websocket.MessageText, []byte(payload)); err != nil {
+				payload, err := json.Marshal(cmd)
+				if err != nil {
+					slog.ErrorContext(ctx, "no se pudo serializar la orden",
+						"host", identity.UserID, "error", err)
+					continue
+				}
+				if err := conn.Write(ctx, websocket.MessageText, payload); err != nil {
 					// El socket se murio. Cancelar despierta al lector, que es
 					// quien hace la limpieza.
 					cancel()
 					return
 				}
 				slog.InfoContext(ctx, "orden enviada al host",
-					"host", identity.UserID, "orden", cmd)
+					"host", identity.UserID, "orden", cmd.Type,
+					"oyentes", len(cmd.Listeners))
 			}
 		}
 	}()

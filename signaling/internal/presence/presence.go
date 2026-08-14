@@ -92,7 +92,27 @@ const (
 	// CommandStopBroadcast le dice que se fue el ultimo oyente y puede dejar de
 	// gastar bateria y datos.
 	CommandStopBroadcast Command = "stop_broadcast"
+
+	// CommandListeners lleva quien lo esta escuchando ahora mismo.
+	//
+	// Va por el mismo canal que las ordenes porque es la misma conversacion: el
+	// servidor es el unico que sabe quien esta en el room, y este socket ya esta
+	// abierto. Al host se le dice quien lo escucha y no solo cuantos — es su
+	// propia audiencia, y la pantalla muestra sus caras.
+	CommandListeners Command = "listeners"
 )
+
+// Message es lo que se le manda al host.
+//
+// Lleva el tipo y, cuando corresponde, los datos. Un struct en vez de un string
+// suelto porque [CommandListeners] necesita acompaniar una lista, y meterla en
+// el nombre habria sido inventar un formato dentro de otro.
+type Message struct {
+	Type Command `json:"type"`
+
+	// Listeners son los ids de quienes escuchan, solo en [CommandListeners].
+	Listeners []string `json:"listeners,omitempty"`
+}
 
 // Store guarda el ultimo anuncio de cada host.
 //
@@ -111,7 +131,7 @@ type Store struct {
 
 	// commands es el canal de vuelta hacia cada host con el socket abierto, para
 	// decirle que empiece o deje de transmitir.
-	commands map[uuid.UUID]chan Command
+	commands map[uuid.UUID]chan Message
 
 	// now es inyectable para que los tests puedan hacer vencer entradas sin
 	// dormir 45 segundos.
@@ -122,7 +142,7 @@ func NewStore() *Store {
 	return &Store{
 		entries:  make(map[uuid.UUID]Entry),
 		watchers: make(map[chan struct{}]struct{}),
-		commands: make(map[uuid.UUID]chan Command),
+		commands: make(map[uuid.UUID]chan Message),
 		now:      time.Now,
 	}
 }
@@ -133,8 +153,8 @@ func NewStore() *Store {
 // Lo llama el handler del socket de presencia al abrirse. Un host que reconecta
 // reemplaza su canal anterior: el viejo pertenece a una conexion que ya no
 // existe, y dejarlo puesto mandaria ordenes a un socket muerto.
-func (s *Store) Attach(hostID uuid.UUID) (<-chan Command, func()) {
-	ch := make(chan Command, commandBuffer)
+func (s *Store) Attach(hostID uuid.UUID) (<-chan Message, func()) {
+	ch := make(chan Message, commandBuffer)
 
 	s.mu.Lock()
 	if previous, ok := s.commands[hostID]; ok {
@@ -162,7 +182,7 @@ func (s *Store) Attach(hostID uuid.UUID) (<-chan Command, func()) {
 // No bloquea nunca: un telefono colgado no puede frenar al que le esta pidiendo
 // escuchar. Perder una orden se recupera solo, porque la reconciliacion vuelve a
 // mandarla en la proxima vuelta.
-func (s *Store) Send(hostID uuid.UUID, cmd Command) bool {
+func (s *Store) Send(hostID uuid.UUID, msg Message) bool {
 	s.mu.RLock()
 	ch, ok := s.commands[hostID]
 	s.mu.RUnlock()
@@ -172,7 +192,7 @@ func (s *Store) Send(hostID uuid.UUID, cmd Command) bool {
 	}
 
 	select {
-	case ch <- cmd:
+	case ch <- msg:
 		return true
 	default:
 		return false

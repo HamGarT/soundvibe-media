@@ -3,6 +3,7 @@ package httpserver
 import (
 	"context"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -47,6 +48,13 @@ type audience struct {
 	wanted  map[uuid.UUID]time.Time
 	serving map[uuid.UUID]struct{}
 
+	// listeners es quien esta escuchando a cada host, para poder decirselo.
+	//
+	// Se da de alta en el join, que es inmediato, y se poda en la reconciliacion.
+	// Al reves — esperar a verlos en el SFU — el host tardaria hasta una vuelta
+	// entera mas la gracia en ver aparecer a alguien que ya esta con el.
+	listeners map[uuid.UUID]map[string]struct{}
+
 	now func() time.Time
 }
 
@@ -62,8 +70,9 @@ func newAudience(lister livekitLister, store *presence.Store) *audience {
 	return &audience{
 		livekit:  lister,
 		presence: store,
-		wanted:   make(map[uuid.UUID]time.Time),
-		serving:  make(map[uuid.UUID]struct{}),
+		wanted:    make(map[uuid.UUID]time.Time),
+		serving:   make(map[uuid.UUID]struct{}),
+		listeners: make(map[uuid.UUID]map[string]struct{}),
 		now:      time.Now,
 	}
 }
@@ -74,9 +83,13 @@ func newAudience(lister livekitLister, store *presence.Store) *audience {
 // Se llama al firmar un token de oyente, no al conectarse este: es el ultimo
 // momento en que este servicio se entera de algo, y el audio tiene que estar
 // saliendo para cuando el oyente termine de entrar al room.
-func (a *audience) Requested(ctx context.Context, hostID uuid.UUID) {
+func (a *audience) Requested(ctx context.Context, hostID, listenerID uuid.UUID) {
 	a.mu.Lock()
 	a.wanted[hostID] = a.now()
+	if a.listeners[hostID] == nil {
+		a.listeners[hostID] = make(map[string]struct{})
+	}
+	a.listeners[hostID][listenerID.String()] = struct{}{}
 	_, alreadyServing := a.serving[hostID]
 	if !alreadyServing {
 		a.serving[hostID] = struct{}{}
@@ -89,7 +102,7 @@ func (a *audience) Requested(ctx context.Context, hostID uuid.UUID) {
 		return
 	}
 
-	if !a.presence.Send(hostID, presence.CommandStartBroadcast) {
+	if !a.presence.Send(hostID, presence.Message{Type: presence.CommandStartBroadcast}) {
 		// Sin socket de presencia no hay forma de avisarle. Pasa con un host que
 		// dejo de compartir entre que se dibujo la pantalla del oyente y el tap;
 		// el oyente entra a un room mudo y su propia maquina de estados lo cuenta.
@@ -98,11 +111,36 @@ func (a *audience) Requested(ctx context.Context, hostID uuid.UUID) {
 		a.mu.Lock()
 		delete(a.serving, hostID)
 		delete(a.wanted, hostID)
+		delete(a.listeners, hostID)
 		a.mu.Unlock()
 		return
 	}
 
 	slog.InfoContext(ctx, "audio pedido al host", "host", hostID)
+	a.sendListeners(hostID)
+}
+
+// sendListeners le manda al host quien lo esta escuchando.
+//
+// Se manda entera cada vez, no los cambios: son un puniado de ids, y un cliente
+// que tuviera que aplicar diferencias se desincronizaria la primera vez que
+// perdiera una — sin forma de notarlo.
+func (a *audience) sendListeners(hostID uuid.UUID) {
+	a.mu.Lock()
+	ids := make([]string, 0, len(a.listeners[hostID]))
+	for id := range a.listeners[hostID] {
+		ids = append(ids, id)
+	}
+	a.mu.Unlock()
+
+	// Orden estable: el mismo conjunto tiene que producir el mismo mensaje, o el
+	// cliente veria cambiar la lista sin que haya cambiado nadie.
+	sort.Strings(ids)
+
+	a.presence.Send(hostID, presence.Message{
+		Type:      presence.CommandListeners,
+		Listeners: ids,
+	})
 }
 
 // Forget borra todo lo que se sabia de un host.
@@ -122,6 +160,7 @@ func (a *audience) Forget(hostID uuid.UUID) {
 	defer a.mu.Unlock()
 	delete(a.serving, hostID)
 	delete(a.wanted, hostID)
+	delete(a.listeners, hostID)
 }
 
 // Reconcile pregunta al SFU quien sigue conectado y para las transmisiones que
@@ -164,14 +203,27 @@ func (a *audience) reconcileHost(ctx context.Context, hostID uuid.UUID) {
 
 	// El relay esta en el room con la identidad del host, asi que no cuenta como
 	// audiencia: si contara, ninguna transmision se apagaria nunca.
-	listeners := 0
+	present := make(map[string]struct{}, len(identities))
 	for _, identity := range identities {
 		if identity != hostID.String() {
-			listeners++
+			present[identity] = struct{}{}
 		}
 	}
 
-	if listeners > 0 {
+	// El SFU manda sobre quien sigue conectado. Lo que se anoto en el join es una
+	// intencion: sirve para que el host vea al oyente en el acto, pero si el
+	// oyente ya no esta en el room, no esta.
+	a.mu.Lock()
+	changed := len(present) != len(a.listeners[hostID])
+	if changed {
+		a.listeners[hostID] = present
+	}
+	a.mu.Unlock()
+	if changed {
+		a.sendListeners(hostID)
+	}
+
+	if len(present) > 0 {
 		a.mu.Lock()
 		a.wanted[hostID] = a.now()
 		a.mu.Unlock()
@@ -181,9 +233,10 @@ func (a *audience) reconcileHost(ctx context.Context, hostID uuid.UUID) {
 	a.mu.Lock()
 	delete(a.serving, hostID)
 	delete(a.wanted, hostID)
+	delete(a.listeners, hostID)
 	a.mu.Unlock()
 
-	a.presence.Send(hostID, presence.CommandStopBroadcast)
+	a.presence.Send(hostID, presence.Message{Type: presence.CommandStopBroadcast})
 	slog.InfoContext(ctx, "sin oyentes: se le pidio al host que pare", "host", hostID)
 }
 
