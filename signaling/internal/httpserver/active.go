@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 
@@ -64,6 +65,38 @@ func (s *Server) active(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	hosts, err := s.activeHostsFor(r.Context(), identity.UserID, accessToken)
+	if err != nil {
+		// Fallar cerrado: sin respuesta de core no se revela quien esta activo.
+		s.failCoreError(w, r, err, "no se pudieron resolver los amigos activos")
+		return
+	}
+
+	// Info, no Debug: el nivel por defecto de slog es Info, asi que en Debug esta
+	// linea no se ve nunca — y es justo la que dice por que la pantalla de amigos
+	// salio vacia (nadie transmite / no son amigos / permiso denegado).
+	slog.InfoContext(r.Context(), "amigos activos",
+		"listener", identity.UserID, "con_presencia", s.presenceStore.Count(),
+		"transmitiendo", len(s.relay.Broadcasting()), "permitidos", len(hosts))
+
+	writeJSON(w, r, http.StatusOK, activeResponse{Hosts: hosts})
+}
+
+// activeHostsFor resuelve que amigos de `listenerID` estan escuchando algo y
+// puede ver.
+//
+// Vive aparte del handler porque lo comparten los dos caminos que exponen esta
+// informacion: `GET /rooms/active`, que responde una vez, y el WebSocket de
+// `/rooms/subscribe`, que la empuja cada vez que cambia. Tener una sola
+// implementacion no es prolijidad — es la decision 4 del plan: si hubiera dos,
+// una de las dos puede olvidarse de preguntar por los permisos, y la que se
+// olvide filtra por la UI la actividad de alguien que la bloqueo con cuidado.
+//
+// Devuelve error solo cuando no se pudo *preguntar*. Sin respuesta de core no se
+// revela nada: el llamador falla cerrado.
+func (s *Server) activeHostsFor(
+	ctx context.Context, listenerID uuid.UUID, accessToken string,
+) ([]activeHost, error) {
 	// Quien esta activo sale de la capa de presencia y SOLO de ahi: el audio
 	// arranca recien cuando alguien toca tune in, asi que mirar el relay daria
 	// por inactivo a todo el que todavia escucha solo — que es justamente la
@@ -86,14 +119,12 @@ func (s *Server) active(w http.ResponseWriter, r *http.Request) {
 	// El conjunto de hosts activos es chico, asi que se le pregunta a core por
 	// los permisos de unos pocos y no de toda la lista de amigos.
 	if len(live) == 0 {
-		writeJSON(w, r, http.StatusOK, activeResponse{Hosts: []activeHost{}})
-		return
+		return []activeHost{}, nil
 	}
 
-	friends, err := s.core.Friends(r.Context(), accessToken)
+	friends, err := s.core.Friends(ctx, accessToken)
 	if err != nil {
-		s.failCoreError(w, r, err, "no se pudo obtener la lista de amigos")
-		return
+		return nil, err
 	}
 
 	candidates := make([]uuid.UUID, 0, len(friends))
@@ -119,15 +150,12 @@ func (s *Server) active(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(candidates) == 0 {
-		writeJSON(w, r, http.StatusOK, activeResponse{Hosts: []activeHost{}})
-		return
+		return []activeHost{}, nil
 	}
 
-	allowed, err := s.core.CanListenBatch(r.Context(), identity.UserID, candidates)
+	allowed, err := s.core.CanListenBatch(ctx, listenerID, candidates)
 	if err != nil {
-		// Fallar cerrado: sin respuesta de core no se revela quien esta activo.
-		s.failCoreError(w, r, err, "no se pudieron verificar los permisos de escucha")
-		return
+		return nil, err
 	}
 
 	hosts := make([]activeHost, 0, len(allowed))
@@ -136,14 +164,5 @@ func (s *Server) active(w http.ResponseWriter, r *http.Request) {
 			hosts = append(hosts, host)
 		}
 	}
-
-	// Info, no Debug: el nivel por defecto de slog es Info, asi que en Debug esta
-	// linea no se ve nunca — y es justo la que dice por que la pantalla de amigos
-	// salio vacia (nadie transmite / no son amigos / permiso denegado).
-	slog.InfoContext(r.Context(), "amigos activos",
-		"listener", identity.UserID, "con_presencia", s.presenceStore.Count(),
-		"transmitiendo", len(s.relay.Broadcasting()), "amigos_activos", len(candidates),
-		"permitidos", len(hosts))
-
-	writeJSON(w, r, http.StatusOK, activeResponse{Hosts: hosts})
+	return hosts, nil
 }

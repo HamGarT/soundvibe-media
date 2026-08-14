@@ -11,6 +11,7 @@
 package httpserver
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -38,12 +39,22 @@ type Server struct {
 // New arma el handler HTTP completo del servicio.
 func New(cfg config.Config, coreClient *core.Client, livekitClient *livekit.Client) http.Handler {
 	minter := rooms.NewMinter(cfg.LiveKit)
+	presenceStore := presence.NewStore()
+
+	// Vencer no tiene evento propio: a nadie le avisan cuando a un telefono se le
+	// acaba la bateria, y el host que pausa simplemente deja de latir. El barrido
+	// convierte eso en un cambio, que es lo que despierta a los suscriptores.
+	//
+	// context.Background y sin cancelacion: vive lo que vive el proceso, igual que
+	// el router. Nada aca sobrevive a un reinicio ni tiene por que hacerlo.
+	presenceStore.StartSweeper(context.Background(), presence.SweepInterval)
+
 	s := &Server{
 		core:          coreClient,
 		livekit:       livekitClient,
 		minter:        minter,
 		relay:         relay.New(cfg.LiveKit, minter),
-		presenceStore: presence.NewStore(),
+		presenceStore: presenceStore,
 	}
 
 	r := chi.NewRouter()
@@ -84,6 +95,9 @@ func New(cfg config.Config, coreClient *core.Client, livekitClient *livekit.Clie
 	// Y por aca dice que esta sonando, todo el tiempo que reproduzca. Separado
 	// del anterior a proposito: ver el comentario de s.presence.
 	r.Get("/rooms/presence", s.presence)
+	// El otro lado del mismo asunto: por aca el oyente recibe los cambios en vez
+	// de preguntar cada tantos segundos.
+	r.Get("/rooms/subscribe", s.subscribe)
 
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, http.StatusNotFound, "not_found", "recurso no encontrado")
