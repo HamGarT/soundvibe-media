@@ -6,11 +6,12 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/soundvibe/media/signaling/internal/presence"
 	"github.com/soundvibe/media/signaling/internal/rooms"
 )
 
-// activeHost es un amigo transmitiendo ahora mismo, al que el usuario puede
-// entrar a escuchar.
+// activeHost es un amigo escuchando algo ahora mismo, al que el usuario puede
+// entrar a acompaniar.
 type activeHost struct {
 	HostID      uuid.UUID `json:"host_id"`
 	Username    string    `json:"username"`
@@ -20,6 +21,18 @@ type activeHost struct {
 	// el token en /rooms/join. Se manda ya resuelto para que el cliente no tenga
 	// que replicar la convencion de nombres.
 	Room string `json:"room"`
+
+	// Que esta sonando. Van vacios cuando el host esta transmitiendo audio pero
+	// todavia no anuncio nada por el socket de presencia; la pantalla lo muestra
+	// activo igual, porque estar activo es lo que habilita el boton.
+	Title      string `json:"title"`
+	Artist     string `json:"artist"`
+	Album      string `json:"album"`
+	DurationMs int64  `json:"duration_ms"`
+	// PositionMs es donde iba el host en su ultimo anuncio, no ahora mismo:
+	// entre latidos pasan segundos. Sirve para pintar una barra aproximada, no
+	// para sincronizar nada.
+	PositionMs int64 `json:"position_ms"`
 }
 
 type activeResponse struct {
@@ -51,11 +64,29 @@ func (s *Server) active(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Se cruza primero contra quien transmite: el conjunto de hosts activos es
-	// chico, asi que se le pregunta a core por permisos de unos pocos y no de
-	// toda la lista de amigos.
+	// Quien esta activo sale de la capa de presencia, no de quien esta
+	// transmitiendo: el audio arranca recien cuando alguien toca tune in, asi que
+	// mirar solo el relay daria por inactivo a todo el que todavia escucha solo
+	// — que es justamente la gente con la que uno querria tunear.
+	//
+	// Se unen igual los que si estan transmitiendo. En la practica ya anunciaron
+	// presencia, pero un host cuyo socket de presencia se cayo mientras el audio
+	// sigue fluyendo esta demostrablemente activo, y esconderlo dejaria a sus
+	// oyentes sin forma de volver a entrar.
+	live := make(map[uuid.UUID]presence.Track)
+	for _, entry := range s.presenceStore.Active() {
+		live[entry.HostID] = entry.Track
+	}
 	broadcasting := s.relay.Broadcasting()
-	if len(broadcasting) == 0 {
+	for _, hostID := range broadcasting {
+		if _, announced := live[hostID]; !announced {
+			live[hostID] = presence.Track{}
+		}
+	}
+
+	// El conjunto de hosts activos es chico, asi que se le pregunta a core por
+	// los permisos de unos pocos y no de toda la lista de amigos.
+	if len(live) == 0 {
 		writeJSON(w, r, http.StatusOK, activeResponse{Hosts: []activeHost{}})
 		return
 	}
@@ -66,15 +97,11 @@ func (s *Server) active(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	live := make(map[uuid.UUID]struct{}, len(broadcasting))
-	for _, hostID := range broadcasting {
-		live[hostID] = struct{}{}
-	}
-
 	candidates := make([]uuid.UUID, 0, len(friends))
 	byID := make(map[uuid.UUID]activeHost, len(friends))
 	for _, friend := range friends {
-		if _, isLive := live[friend.UserID]; !isLive {
+		track, isLive := live[friend.UserID]
+		if !isLive {
 			continue
 		}
 		candidates = append(candidates, friend.UserID)
@@ -84,6 +111,11 @@ func (s *Server) active(w http.ResponseWriter, r *http.Request) {
 			DisplayName: friend.DisplayName,
 			AvatarURL:   friend.AvatarURL,
 			Room:        rooms.Name(friend.UserID),
+			Title:       track.Title,
+			Artist:      track.Artist,
+			Album:       track.Album,
+			DurationMs:  track.DurationMs,
+			PositionMs:  track.PositionMs,
 		}
 	}
 
@@ -110,8 +142,9 @@ func (s *Server) active(w http.ResponseWriter, r *http.Request) {
 	// linea no se ve nunca — y es justo la que dice por que la pantalla de amigos
 	// salio vacia (nadie transmite / no son amigos / permiso denegado).
 	slog.InfoContext(r.Context(), "amigos activos",
-		"listener", identity.UserID, "transmitiendo", len(broadcasting),
-		"amigos_activos", len(candidates), "permitidos", len(hosts))
+		"listener", identity.UserID, "con_presencia", s.presenceStore.Count(),
+		"transmitiendo", len(broadcasting), "amigos_activos", len(candidates),
+		"permitidos", len(hosts))
 
 	writeJSON(w, r, http.StatusOK, activeResponse{Hosts: hosts})
 }

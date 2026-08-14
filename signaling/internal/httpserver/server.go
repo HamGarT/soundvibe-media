@@ -1,8 +1,13 @@
 // Package httpserver arma el router del servicio de signaling.
 //
-// El servicio es deliberadamente delgado y sin estado: no tiene base de datos.
-// soundvibe-core es la autoridad sobre identidad y permisos, y LiveKit sobre el
-// audio; esto es solo el portero entre los dos.
+// El servicio es deliberadamente delgado y no tiene base de datos: soundvibe-core
+// es la autoridad sobre identidad y permisos, y LiveKit sobre el audio; esto es
+// solo el portero entre los dos.
+//
+// El unico estado que si guarda vive en memoria y es cierto solo mientras dura
+// una conexion: que hosts estan transmitiendo (relay) y que esta sonando en cada
+// telefono (presence). Los dos se pierden al reiniciar, que es lo correcto —
+// persistirlos reviviria una multitud de gente "activa" que ya no lo esta.
 package httpserver
 
 import (
@@ -17,25 +22,28 @@ import (
 	"github.com/soundvibe/media/signaling/internal/config"
 	"github.com/soundvibe/media/signaling/internal/core"
 	"github.com/soundvibe/media/signaling/internal/livekit"
+	"github.com/soundvibe/media/signaling/internal/presence"
 	"github.com/soundvibe/media/signaling/internal/relay"
 	"github.com/soundvibe/media/signaling/internal/rooms"
 )
 
 type Server struct {
-	core    *core.Client
-	livekit *livekit.Client
-	minter  *rooms.Minter
-	relay   *relay.Relay
+	core          *core.Client
+	livekit       *livekit.Client
+	minter        *rooms.Minter
+	relay         *relay.Relay
+	presenceStore *presence.Store
 }
 
 // New arma el handler HTTP completo del servicio.
 func New(cfg config.Config, coreClient *core.Client, livekitClient *livekit.Client) http.Handler {
 	minter := rooms.NewMinter(cfg.LiveKit)
 	s := &Server{
-		core:    coreClient,
-		livekit: livekitClient,
-		minter:  minter,
-		relay:   relay.New(cfg.LiveKit, minter),
+		core:          coreClient,
+		livekit:       livekitClient,
+		minter:        minter,
+		relay:         relay.New(cfg.LiveKit, minter),
+		presenceStore: presence.NewStore(),
 	}
 
 	r := chi.NewRouter()
@@ -65,10 +73,17 @@ func New(cfg config.Config, coreClient *core.Client, livekitClient *livekit.Clie
 		})
 	})
 
-	// El host manda su audio ya codificado por aca. Sin timeout, por lo de
-	// arriba. La autenticacion va por header Authorization, que el cliente nativo
-	// (OkHttp) si puede mandar en el handshake — un navegador no podria.
+	// Los dos WebSocket van fuera del grupo con timeout, por lo de arriba: duran
+	// lo que dure la sesion. La autenticacion va por header Authorization, que el
+	// cliente nativo (OkHttp) si puede mandar en el handshake — un navegador no
+	// podria.
+
+	// El host manda su audio ya codificado por aca, recien cuando alguien lo
+	// escucha.
 	r.Get("/rooms/broadcast", s.broadcast)
+	// Y por aca dice que esta sonando, todo el tiempo que reproduzca. Separado
+	// del anterior a proposito: ver el comentario de s.presence.
+	r.Get("/rooms/presence", s.presence)
 
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, http.StatusNotFound, "not_found", "recurso no encontrado")

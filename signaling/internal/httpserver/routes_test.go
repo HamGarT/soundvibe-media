@@ -25,6 +25,7 @@ func TestRutasRegistradas(t *testing.T) {
 		{http.MethodPost, "/rooms/join"},
 		{http.MethodGet, "/rooms/active"},
 		{http.MethodGet, "/rooms/broadcast"},
+		{http.MethodGet, "/rooms/presence"},
 		{http.MethodPost, "/internal/revoke"},
 	}
 
