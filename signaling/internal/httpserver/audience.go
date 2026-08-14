@@ -105,6 +105,25 @@ func (a *audience) Requested(ctx context.Context, hostID uuid.UUID) {
 	slog.InfoContext(ctx, "audio pedido al host", "host", hostID)
 }
 
+// Forget borra todo lo que se sabia de un host.
+//
+// Se llama cuando su socket de presencia se abre o se cierra, y arregla el bug
+// por el que compartir funcionaba una sola vez: al dejar de compartir se limpiaba
+// la presencia y el canal de ordenes, pero este registro no, asi que el host
+// quedaba marcado como "ya transmitiendo". Al volver a compartir, el siguiente
+// oyente entraba por [Requested], se lo daba por atendido y **no se le mandaba la
+// orden**. El telefono nunca se enteraba: ni audio, ni cambio de estado.
+//
+// Cerrar el socket es la unica senial fiable de que lo que creiamos sobre ese
+// host dejo de valer — reconciliar no alcanzaba, porque si quedaba alguien en el
+// room el registro se refrescaba para siempre.
+func (a *audience) Forget(hostID uuid.UUID) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.serving, hostID)
+	delete(a.wanted, hostID)
+}
+
 // Reconcile pregunta al SFU quien sigue conectado y para las transmisiones que
 // ya no escucha nadie.
 func (a *audience) Reconcile(ctx context.Context) {

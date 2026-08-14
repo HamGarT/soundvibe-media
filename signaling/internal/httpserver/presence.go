@@ -76,8 +76,14 @@ func (s *Server) presence(w http.ResponseWriter, r *http.Request) {
 
 	// La baja limpia. La sucia — el telefono que pierde la red sin cerrar — la
 	// cubre el TTL del store, porque en ese caso este defer no corre nunca.
+	// Al abrir y al cerrar: una conexion nueva empieza de cero, y una que termina
+	// invalida todo lo que creiamos sobre este host. Sin esto, compartir funciona
+	// una sola vez por sesion — ver el comentario de audience.Forget.
+	s.audience.Forget(identity.UserID)
+
 	defer func() {
 		s.presenceStore.Clear(identity.UserID)
+		s.audience.Forget(identity.UserID)
 		slog.InfoContext(r.Context(), "presencia terminada", "host", identity.UserID)
 	}()
 

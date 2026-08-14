@@ -250,6 +250,74 @@ func TestDespuesDeCortarSeVuelveAPedir(t *testing.T) {
 	}
 }
 
+// El bug que hacia que compartir anduviera una sola vez: al dejar de compartir
+// se limpiaba la presencia pero no este registro, asi que el host quedaba
+// marcado como "ya transmitiendo" y al segundo intento no se le mandaba nada.
+func TestSePuedeVolverACompartirDespuesDeCortar(t *testing.T) {
+	store := presence.NewStore()
+	host := uuid.New()
+
+	// Primera sesion: comparte y alguien entra.
+	primeras, detach := store.Attach(host)
+	a := newAudience(&fakeLister{enabled: true}, store)
+	a.Requested(context.Background(), host)
+	if cmd := recibir(primeras); cmd != presence.CommandStartBroadcast {
+		t.Fatalf("primera sesion: orden = %q", cmd)
+	}
+
+	// Deja de compartir: se cierra el socket.
+	detach()
+
+	// Sin olvidar, el host sigue marcado como atendido y el proximo oyente no
+	// dispara nada. Esto es exactamente lo que se veia en el telefono: se apretaba
+	// SHARE, alguien entraba, y el boton se quedaba en ON para siempre.
+	sinOlvidar, detachSinOlvidar := store.Attach(host)
+	a.Requested(context.Background(), host)
+	if cmd := recibir(sinOlvidar); cmd != "" {
+		t.Fatalf("sin Forget no deberia mandarse nada (es el bug), llego %q", cmd)
+	}
+	detachSinOlvidar()
+
+	a.Forget(host)
+
+	// Segunda sesion: vuelve a compartir y entra alguien otra vez.
+	segundas, detach2 := store.Attach(host)
+	defer detach2()
+	a.Requested(context.Background(), host)
+
+	if cmd := recibir(segundas); cmd != presence.CommandStartBroadcast {
+		t.Fatalf("segunda sesion: orden = %q, se esperaba volver a pedir audio", cmd)
+	}
+}
+
+// Aunque quede alguien en el room, cerrar el socket del host invalida lo que
+// sabiamos: reconciliar no alcanzaba, porque ese oyente refrescaba el registro
+// indefinidamente.
+func TestForgetLimpiaAunqueQuedeAudiencia(t *testing.T) {
+	store := presence.NewStore()
+	host := uuid.New()
+	commands, detach := store.Attach(host)
+	defer detach()
+
+	lister := &fakeLister{
+		enabled: true,
+		byRoom:  map[string][]string{rooms.Name(host): {host.String(), uuid.New().String()}},
+	}
+	a := newAudience(lister, store)
+	a.Requested(context.Background(), host)
+	_ = recibir(commands)
+
+	a.Forget(host)
+
+	a.mu.Lock()
+	_, serving := a.serving[host]
+	a.mu.Unlock()
+
+	if serving {
+		t.Fatal("Forget tiene que limpiar el registro haya o no gente en el room")
+	}
+}
+
 // Sin LiveKit configurado no hay a quien preguntarle, asi que no se toma
 // ninguna decision — en vez de dar por vacios todos los rooms.
 func TestSinLiveKitNoSeReconcilia(t *testing.T) {
