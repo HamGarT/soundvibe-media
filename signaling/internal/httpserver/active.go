@@ -64,24 +64,23 @@ func (s *Server) active(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Quien esta activo sale de la capa de presencia, no de quien esta
-	// transmitiendo: el audio arranca recien cuando alguien toca tune in, asi que
-	// mirar solo el relay daria por inactivo a todo el que todavia escucha solo
-	// — que es justamente la gente con la que uno querria tunear.
+	// Quien esta activo sale de la capa de presencia y SOLO de ahi: el audio
+	// arranca recien cuando alguien toca tune in, asi que mirar el relay daria
+	// por inactivo a todo el que todavia escucha solo — que es justamente la
+	// gente con la que uno querria tunear.
 	//
-	// Se unen igual los que si estan transmitiendo. En la practica ya anunciaron
-	// presencia, pero un host cuyo socket de presencia se cayo mientras el audio
-	// sigue fluyendo esta demostrablemente activo, y esconderlo dejaria a sus
-	// oyentes sin forma de volver a entrar.
+	// Hubo una version que ademas unia los que estaban transmitiendo, como red de
+	// seguridad por si a un host se le caia el socket de presencia con el audio
+	// andando. Salio mal y se saco: las sesiones del relay **no vencen**. Viven
+	// hasta que termina el bucle de lectura de su WebSocket, y ese socket no
+	// tiene deadline ni ping, asi que un telefono que se muere deja una conexion
+	// a medio cerrar que el servidor puede no notar nunca. El host quedaba
+	// activo para siempre, sin forma de sacarlo salvo reiniciando el servicio.
+	// La presencia vence sola a los 45 s, que es exactamente la propiedad que
+	// hace falta aca.
 	live := make(map[uuid.UUID]presence.Track)
 	for _, entry := range s.presenceStore.Active() {
 		live[entry.HostID] = entry.Track
-	}
-	broadcasting := s.relay.Broadcasting()
-	for _, hostID := range broadcasting {
-		if _, announced := live[hostID]; !announced {
-			live[hostID] = presence.Track{}
-		}
 	}
 
 	// El conjunto de hosts activos es chico, asi que se le pregunta a core por
@@ -143,7 +142,7 @@ func (s *Server) active(w http.ResponseWriter, r *http.Request) {
 	// salio vacia (nadie transmite / no son amigos / permiso denegado).
 	slog.InfoContext(r.Context(), "amigos activos",
 		"listener", identity.UserID, "con_presencia", s.presenceStore.Count(),
-		"transmitiendo", len(broadcasting), "amigos_activos", len(candidates),
+		"transmitiendo", len(s.relay.Broadcasting()), "amigos_activos", len(candidates),
 		"permitidos", len(hosts))
 
 	writeJSON(w, r, http.StatusOK, activeResponse{Hosts: hosts})
