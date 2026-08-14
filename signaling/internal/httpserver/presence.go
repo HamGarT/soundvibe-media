@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -80,7 +81,39 @@ func (s *Server) presence(w http.ResponseWriter, r *http.Request) {
 		slog.InfoContext(r.Context(), "presencia terminada", "host", identity.UserID)
 	}()
 
-	ctx := r.Context()
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+
+	// El canal de vuelta: por aca se le dice al host que empiece o deje de
+	// transmitir. Es lo que permite que no publique audio hasta que haya alguien
+	// escuchando, en vez de subir 128 kbps al vacio por las dudas.
+	commands, detach := s.presenceStore.Attach(identity.UserID)
+	defer detach()
+
+	// Escribir va en su propia goroutine porque leer bloquea: el bucle de abajo
+	// se queda esperando el proximo anuncio del telefono, que puede tardar
+	// quince segundos, y una orden no puede esperar a eso para salir.
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case cmd, open := <-commands:
+				if !open {
+					return
+				}
+				payload := `{"type":"` + string(cmd) + `"}`
+				if err := conn.Write(ctx, websocket.MessageText, []byte(payload)); err != nil {
+					// El socket se murio. Cancelar despierta al lector, que es
+					// quien hace la limpieza.
+					cancel()
+					return
+				}
+				slog.InfoContext(ctx, "orden enviada al host",
+					"host", identity.UserID, "orden", cmd)
+			}
+		}
+	}()
 	for {
 		messageType, data, readErr := conn.Read(ctx)
 		if readErr != nil {

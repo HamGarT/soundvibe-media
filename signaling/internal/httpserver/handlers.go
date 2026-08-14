@@ -99,6 +99,13 @@ func (s *Server) join(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Recien aca, con el permiso ya concedido: pedirle audio antes seria avisarle
+	// al host que alguien intento escucharlo aunque no tuviera permiso.
+	//
+	// Y antes de responder, no despues: el oyente se conecta al SFU apenas recibe
+	// este token, asi que el audio tiene que estar ya en camino cuando llegue.
+	s.audience.Requested(r.Context(), hostID)
+
 	slog.InfoContext(r.Context(), "join permitido",
 		"listener", identity.UserID, "host", hostID, "role", role, "reason", reason)
 	writeJSON(w, r, http.StatusOK, token)

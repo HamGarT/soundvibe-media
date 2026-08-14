@@ -34,6 +34,7 @@ type Server struct {
 	minter        *rooms.Minter
 	relay         *relay.Relay
 	presenceStore *presence.Store
+	audience      *audience
 }
 
 // New arma el handler HTTP completo del servicio.
@@ -55,7 +56,13 @@ func New(cfg config.Config, coreClient *core.Client, livekitClient *livekit.Clie
 		minter:        minter,
 		relay:         relay.New(cfg.LiveKit, minter),
 		presenceStore: presenceStore,
+		audience:      newAudience(livekitClient, presenceStore),
 	}
+
+	// Que un oyente se vaya no genera ningun evento en este servicio, asi que la
+	// unica forma de saber que un host dejo de tener audiencia es preguntarle al
+	// SFU cada tanto.
+	s.audience.StartReconciler(context.Background(), audienceReconcile)
 
 	r := chi.NewRouter()
 

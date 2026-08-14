@@ -29,6 +29,15 @@ import (
 // despreciable al lado de los 45 s que tarda en vencer.
 const SweepInterval = 5 * time.Second
 
+// commandBuffer son las ordenes que se le guardan a un host antes de empezar a
+// descartarlas.
+//
+// Chico a proposito: las ordenes son de estado ("transmiti" / "no transmitas"),
+// no de historia. Si se acumulan es porque el telefono no esta leyendo, y en ese
+// caso lo ultimo que sirve es entregarle una cola de ordenes viejas cuando
+// vuelva — la reconciliacion le va a decir el estado correcto igual.
+const commandBuffer = 4
+
 // TTL es cuanto vale un anuncio sin que lo refresquen.
 //
 // Existe porque un telefono que pierde la red no cierra el WebSocket: se queda
@@ -66,6 +75,25 @@ type Entry struct {
 	UpdatedAt time.Time
 }
 
+// Command es una orden que el servidor le manda al telefono del host por el
+// mismo socket por el que este anuncia.
+//
+// El socket de presencia se abre apenas el usuario decide compartir y se queda
+// abierto, asi que es el unico canal que ya esta ahi cuando hace falta avisarle
+// algo — y avisarle es justamente lo que permite no transmitir hasta que haya
+// alguien escuchando.
+type Command string
+
+const (
+	// CommandStartBroadcast le dice al host que alguien quiere escucharlo y que
+	// empiece a publicar audio.
+	CommandStartBroadcast Command = "start_broadcast"
+
+	// CommandStopBroadcast le dice que se fue el ultimo oyente y puede dejar de
+	// gastar bateria y datos.
+	CommandStopBroadcast Command = "stop_broadcast"
+)
+
 // Store guarda el ultimo anuncio de cada host.
 //
 // Todo en memoria y a proposito: la presencia es cierta solo mientras el socket
@@ -81,6 +109,10 @@ type Store struct {
 	// entre todos es "algo cambio, volve a mirar".
 	watchers map[chan struct{}]struct{}
 
+	// commands es el canal de vuelta hacia cada host con el socket abierto, para
+	// decirle que empiece o deje de transmitir.
+	commands map[uuid.UUID]chan Command
+
 	// now es inyectable para que los tests puedan hacer vencer entradas sin
 	// dormir 45 segundos.
 	now func() time.Time
@@ -90,8 +122,70 @@ func NewStore() *Store {
 	return &Store{
 		entries:  make(map[uuid.UUID]Entry),
 		watchers: make(map[chan struct{}]struct{}),
+		commands: make(map[uuid.UUID]chan Command),
 		now:      time.Now,
 	}
+}
+
+// Attach registra el canal por el que se le mandan ordenes a un host, y devuelve
+// la funcion para darlo de baja.
+//
+// Lo llama el handler del socket de presencia al abrirse. Un host que reconecta
+// reemplaza su canal anterior: el viejo pertenece a una conexion que ya no
+// existe, y dejarlo puesto mandaria ordenes a un socket muerto.
+func (s *Store) Attach(hostID uuid.UUID) (<-chan Command, func()) {
+	ch := make(chan Command, commandBuffer)
+
+	s.mu.Lock()
+	if previous, ok := s.commands[hostID]; ok {
+		close(previous)
+	}
+	s.commands[hostID] = ch
+	s.mu.Unlock()
+
+	return ch, func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		// Solo si sigue siendo el nuestro: si el host reconecto, este canal ya fue
+		// reemplazado y cerrado, y borrar la entrada dejaria sin ordenes a la
+		// conexion nueva.
+		if current, ok := s.commands[hostID]; ok && current == ch {
+			delete(s.commands, hostID)
+			close(ch)
+		}
+	}
+}
+
+// Send le manda una orden a un host. Devuelve false si no tiene socket abierto o
+// si no la esta leyendo.
+//
+// No bloquea nunca: un telefono colgado no puede frenar al que le esta pidiendo
+// escuchar. Perder una orden se recupera solo, porque la reconciliacion vuelve a
+// mandarla en la proxima vuelta.
+func (s *Store) Send(hostID uuid.UUID, cmd Command) bool {
+	s.mu.RLock()
+	ch, ok := s.commands[hostID]
+	s.mu.RUnlock()
+
+	if !ok {
+		return false
+	}
+
+	select {
+	case ch <- cmd:
+		return true
+	default:
+		return false
+	}
+}
+
+// HasSocket dice si un host tiene el socket de presencia abierto, o sea si esta
+// en condiciones de recibir ordenes.
+func (s *Store) HasSocket(hostID uuid.UUID) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.commands[hostID]
+	return ok
 }
 
 // Watch devuelve un canal que recibe una senial cada vez que cambia quien esta
