@@ -285,6 +285,63 @@ func (c *Client) CanListenBatch(ctx context.Context, listenerID uuid.UUID, hosts
 	}
 }
 
+// LiveNotice es lo que se le cuenta a core cuando un host se pone a compartir.
+type LiveNotice struct {
+	HostID   uuid.UUID `json:"host_id"`
+	Username string    `json:"username"`
+	Title    string    `json:"title"`
+	Artist   string    `json:"artist"`
+}
+
+// NotifyLive le avisa a core que este host empezo a compartir, para que le
+// mande un push a los amigos que puedan escucharlo.
+//
+// Aca no se decide nada: ni a quien avisarle, ni si corresponde avisar. Este
+// servicio no conoce las amistades ni los permisos, y el antirrebote — que es
+// lo que separa un aviso util de molestar a todo el mundo en cada reconexion —
+// tiene que ser uno solo aunque maniana haya varias instancias de signaling.
+// Todo eso vive en core; aca solo se sabe *cuando* pasa, que es justamente lo
+// que core no puede saber.
+//
+// Best-effort a proposito, igual que la revocacion en el sentido contrario: si
+// core no contesta, el host queda igual de compartiendo y sus amigos lo siguen
+// viendo en la pantalla de activos. Lo unico que se pierde es el aviso, y eso no
+// puede costarle al host su sesion de escucha.
+func (c *Client) NotifyLive(ctx context.Context, notice LiveNotice) error {
+	body, err := json.Marshal(notice)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.baseURL+"/internal/live-notification", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Api-Key", c.apiKey)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	defer drainAndClose(resp)
+
+	switch resp.StatusCode {
+	case http.StatusAccepted, http.StatusOK, http.StatusNoContent:
+		return nil
+
+	case http.StatusUnauthorized:
+		return fmt.Errorf(
+			"%w: core rechazo nuestra INTERNAL_API_KEY (revisar que coincida en los dos servicios)",
+			ErrUnavailable)
+
+	default:
+		return fmt.Errorf("%w: core respondio %d en /internal/live-notification",
+			ErrUnavailable, resp.StatusCode)
+	}
+}
+
 // Health consulta el /health de core. Solo se usa para diagnostico.
 func (c *Client) Health(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/health", nil)

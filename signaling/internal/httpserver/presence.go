@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/coder/websocket"
 
+	"github.com/soundvibe/media/signaling/internal/core"
 	"github.com/soundvibe/media/signaling/internal/presence"
 )
 
@@ -17,6 +19,11 @@ import (
 // sobra para titulos largos sin que un cliente pueda mandar megabytes por
 // mensaje.
 const maxPresenceBytes = 4 << 10
+
+// notifyLiveTimeout acota el aviso a core de que alguien empezo a compartir.
+// Core responde en cuanto lo acepta — el fan-out a FCM lo hace despues, por su
+// cuenta — asi que esto solo cubre la ida.
+const notifyLiveTimeout = 5 * time.Second
 
 // presenceUpdate es lo que manda el host por el socket: que esta sonando ahora.
 //
@@ -73,6 +80,12 @@ func (s *Server) presence(w http.ResponseWriter, r *http.Request) {
 
 	slog.InfoContext(r.Context(), "presencia iniciada",
 		"host", identity.UserID, "username", identity.Username)
+
+	// Si ya se aviso que este host esta en vivo. Es por conexion y no global a
+	// proposito: una conexion nueva es un "empezo" nuevo desde el punto de
+	// vista de este servicio, y quien decide si eso amerita molestar a alguien
+	// es core, que tiene el antirrebote.
+	notified := false
 
 	// La baja limpia. La sucia — el telefono que pierde la red sin cerrar — la
 	// cubre el TTL del store, porque en ese caso este defer no corre nunca.
@@ -172,5 +185,47 @@ func (s *Server) presence(w http.ResponseWriter, r *http.Request) {
 			DurationMs: update.DurationMs,
 			PositionMs: update.PositionMs,
 		})
+
+		// El primer anuncio con cancion de esta conexion es el momento exacto
+		// en que alguien "se puso en vivo", y es el unico lugar del sistema
+		// donde ese instante se conoce: el socket se abre cuando el usuario
+		// prende SHARE y anuncia cuando empieza a sonar algo.
+		//
+		// Una sola vez por conexion, no por cancion: cambiar de tema no es
+		// empezar. El otro rebote — el telefono que reconecta y abre un socket
+		// nuevo cada vez — no se puede ver desde aca, y lo tapa el antirrebote
+		// de core, que ademas sobrevive a que este proceso se reinicie.
+		if !notified {
+			notified = true
+			go notifyLive(s.core, identity, update)
+		}
 	}
+}
+
+// notifyLive avisa a core, fuera del bucle de lectura.
+//
+// En su propia goroutine y con su propio contexto porque el socket no puede
+// esperar: mientras esto va y vuelve, el host tiene que poder seguir anunciando
+// y recibiendo ordenes. Y con contexto propio, no el de la conexion, para que
+// colgar el aviso de un socket que se cierra en el proximo segundo no lo
+// cancele a mitad de camino.
+func notifyLive(client *core.Client, identity core.Identity, update presenceUpdate) {
+	ctx, cancel := context.WithTimeout(context.Background(), notifyLiveTimeout)
+	defer cancel()
+
+	err := client.NotifyLive(ctx, core.LiveNotice{
+		HostID:   identity.UserID,
+		Username: identity.Username,
+		Title:    update.Title,
+		Artist:   update.Artist,
+	})
+	if err != nil {
+		// No se corta nada: el host sigue compartiendo y apareciendo en los
+		// activos. Se pierde el aviso y nada mas.
+		slog.Warn("no se pudo avisar que un host esta en vivo",
+			"host", identity.UserID, "error", err)
+		return
+	}
+	slog.Info("core avisado de que un host esta en vivo",
+		"host", identity.UserID, "username", identity.Username)
 }
