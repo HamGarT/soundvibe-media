@@ -382,12 +382,14 @@ func TestLaAudienciaSePodaConLoQueDiceElSFU(t *testing.T) {
 
 	a.Requested(context.Background(), host, seQueda)
 	a.Requested(context.Background(), host, seFue)
-	_, _ = recibirOyentes(commands)
+	// Se vacia lo anunciado hasta aca —cada join avisa la audiencia— para que lo
+	// que quede sea lo que dijo la reconciliacion.
+	_ = drenar(commands)
 
 	now = now.Add(audienceGrace + time.Second)
 	a.Reconcile(context.Background())
 
-	ids, ok := recibirOyentes(commands)
+	ids, ok := ultimaAudiencia(drenar(commands))
 	if !ok {
 		t.Fatal("al cambiar la audiencia tendria que avisarse")
 	}
@@ -414,5 +416,170 @@ func TestSinLiveKitNoSeReconcilia(t *testing.T) {
 
 	if cmd := recibir(commands); cmd != "" {
 		t.Fatalf("sin LiveKit no se corta nada, llego %q", cmd)
+	}
+}
+
+// TestElUltimoOyenteQueSeVaCortaEnElActo es el motivo de que Left exista: sin
+// el aviso, apagar la transmision depende de la reconciliacion, que corre cada
+// diez segundos detras de una gracia de treinta — el host se queda en LIVE
+// medio minuto largo despues de que ya no lo escucha nadie.
+func TestElUltimoOyenteQueSeVaCortaEnElActo(t *testing.T) {
+	store := presence.NewStore()
+	host := uuid.New()
+	oyente := uuid.New()
+	commands, detach := store.Attach(host)
+	defer detach()
+
+	a := newAudience(&fakeLister{enabled: true}, store)
+	a.Requested(context.Background(), host, oyente)
+	_ = recibir(commands)
+
+	a.Left(context.Background(), host, oyente)
+
+	if cmd := recibir(commands); cmd != presence.CommandStopBroadcast {
+		t.Fatalf("orden = %q, se esperaba %q", cmd, presence.CommandStopBroadcast)
+	}
+
+	// Y queda como si nunca hubiera transmitido, para que el proximo oyente
+	// vuelva a pedirle audio en vez de darlo por atendido.
+	a.mu.Lock()
+	_, serving := a.serving[host]
+	a.mu.Unlock()
+	if serving {
+		t.Error("el host sigue marcado como transmitiendo")
+	}
+}
+
+func TestSiQuedanOyentesNoSeCortaAlIrseUno(t *testing.T) {
+	store := presence.NewStore()
+	host := uuid.New()
+	seVa := uuid.New()
+	seQueda := uuid.New()
+	commands, detach := store.Attach(host)
+	defer detach()
+
+	a := newAudience(&fakeLister{enabled: true}, store)
+	a.Requested(context.Background(), host, seVa)
+	a.Requested(context.Background(), host, seQueda)
+	_ = recibir(commands)
+
+	a.Left(context.Background(), host, seVa)
+
+	// Se mira todo lo que llego, no el primer mensaje: aca salen dos cosas —la
+	// audiencia nueva y, si estuviera mal, la orden de parar— y los helpers de
+	// arriba descartan lo que no buscan.
+	mensajes := drenar(commands)
+	for _, msg := range mensajes {
+		if msg.Type == presence.CommandStopBroadcast {
+			t.Fatal("se corto la transmision con un oyente todavia escuchando")
+		}
+	}
+
+	// Al host se le dice quien queda, que es lo que dibuja las caras.
+	ids, ok := ultimaAudiencia(mensajes)
+	if !ok {
+		t.Fatal("no se aviso la nueva audiencia")
+	}
+	if len(ids) != 1 || ids[0] != seQueda.String() {
+		t.Errorf("audiencia = %v, se esperaba solo %s", ids, seQueda)
+	}
+}
+
+// drenar saca todo lo que haya en el canal sin bloquear.
+func drenar(commands <-chan presence.Message) []presence.Message {
+	var out []presence.Message
+	for {
+		select {
+		case msg := <-commands:
+			out = append(out, msg)
+		default:
+			return out
+		}
+	}
+}
+
+// ultimaAudiencia devuelve el ultimo aviso de audiencia de la tanda, que es el
+// que refleja el estado actual.
+func ultimaAudiencia(mensajes []presence.Message) ([]string, bool) {
+	ids, found := []string(nil), false
+	for _, msg := range mensajes {
+		if msg.Type == presence.CommandListeners {
+			ids, found = msg.Listeners, true
+		}
+	}
+	return ids, found
+}
+
+// Un aviso repetido —la app reintentando, o dos pantallas cerrandose— no puede
+// cortarle la transmision a los que siguen escuchando.
+func TestAvisoDeSalidaRepetidoNoCorta(t *testing.T) {
+	store := presence.NewStore()
+	host := uuid.New()
+	seVa := uuid.New()
+	seQueda := uuid.New()
+	commands, detach := store.Attach(host)
+	defer detach()
+
+	a := newAudience(&fakeLister{enabled: true}, store)
+	a.Requested(context.Background(), host, seVa)
+	a.Requested(context.Background(), host, seQueda)
+	_ = recibir(commands)
+
+	a.Left(context.Background(), host, seVa)
+	a.Left(context.Background(), host, seVa)
+
+	if cmd := recibir(commands); cmd == presence.CommandStopBroadcast {
+		t.Fatal("el aviso repetido corto la transmision")
+	}
+}
+
+// Irse de un host al que no se estaba escuchando no toca nada de ese host.
+func TestSalidaDeQuienNoEstabaEscuchandoNoAfecta(t *testing.T) {
+	store := presence.NewStore()
+	host := uuid.New()
+	oyente := uuid.New()
+	commands, detach := store.Attach(host)
+	defer detach()
+
+	a := newAudience(&fakeLister{enabled: true}, store)
+	a.Requested(context.Background(), host, oyente)
+	_ = recibir(commands)
+
+	a.Left(context.Background(), host, uuid.New())
+
+	if cmd := recibir(commands); cmd == presence.CommandStopBroadcast {
+		t.Fatal("un desconocido corto la transmision de otro")
+	}
+	a.mu.Lock()
+	_, serving := a.serving[host]
+	a.mu.Unlock()
+	if !serving {
+		t.Error("el host dejo de estar marcado como transmitiendo")
+	}
+}
+
+// TestElSegundoOyenteTambienSeAvisa cubre lo que el test de arriba destapo: al
+// segundo oyente no se lo reportaba nunca. La orden de transmitir no se repite
+// —el host ya esta transmitiendo— pero la audiencia si cambio, y la
+// reconciliacion no lo iba a arreglar: compara lo que ve el SFU con lo anotado,
+// y ya coincidian.
+func TestElSegundoOyenteTambienSeAvisa(t *testing.T) {
+	store := presence.NewStore()
+	host := uuid.New()
+	primero := uuid.New()
+	segundo := uuid.New()
+	commands, detach := store.Attach(host)
+	defer detach()
+
+	a := newAudience(&fakeLister{enabled: true}, store)
+	a.Requested(context.Background(), host, primero)
+	a.Requested(context.Background(), host, segundo)
+
+	ids, ok := ultimaAudiencia(drenar(commands))
+	if !ok {
+		t.Fatal("no se aviso la audiencia")
+	}
+	if len(ids) != 2 {
+		t.Errorf("audiencia = %v, se esperaban los dos oyentes", ids)
 	}
 }

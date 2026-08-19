@@ -68,12 +68,12 @@ type livekitLister interface {
 
 func newAudience(lister livekitLister, store *presence.Store) *audience {
 	return &audience{
-		livekit:  lister,
-		presence: store,
+		livekit:   lister,
+		presence:  store,
 		wanted:    make(map[uuid.UUID]time.Time),
 		serving:   make(map[uuid.UUID]struct{}),
 		listeners: make(map[uuid.UUID]map[string]struct{}),
-		now:      time.Now,
+		now:       time.Now,
 	}
 }
 
@@ -97,8 +97,14 @@ func (a *audience) Requested(ctx context.Context, hostID, listenerID uuid.UUID) 
 	a.mu.Unlock()
 
 	if alreadyServing {
-		// Ya le habiamos dicho que transmita y sigue habiendo gente. Repetirselo no
-		// aporta nada.
+		// Ya le habiamos dicho que transmita: repetir la orden no aporta nada.
+		// Pero la audiencia si cambio, y hay que decirselo — es la lista con la
+		// que dibuja las caras de quienes lo escuchan.
+		//
+		// Sin esto el segundo oyente no aparecia nunca: la reconciliacion solo
+		// avisa cuando lo que ve el SFU difiere de lo anotado, y aca ya estaba
+		// anotado, asi que no habia nada que reportar y la orden no salia.
+		a.sendListeners(hostID)
 		return
 	}
 
@@ -141,6 +147,51 @@ func (a *audience) sendListeners(hostID uuid.UUID) {
 		Type:      presence.CommandListeners,
 		Listeners: ids,
 	})
+}
+
+// Left registra que un oyente se fue por su cuenta, y apaga la transmision si
+// era el ultimo.
+//
+// Es la contraparte de [Requested] y existe porque la salida no tiene evento
+// propio en ningun otro lado: sin esto, lo unico que apaga una transmision es
+// [Reconcile], que corre cada diez segundos detras de una gracia de treinta, asi
+// que el host se queda en LIVE entre medio minuto y cuarenta segundos despues de
+// que se fue el ultimo oyente.
+//
+// No reemplaza a la reconciliacion, la adelanta: un aviso solo llega cuando la
+// app puede darlo, y una bateria que se muere, un force-stop o un tunel no
+// avisan nada. Esos siguen cubiertos por el SFU.
+//
+// La gracia no se aplica aca: el oyente esta diciendo explicitamente que se fue,
+// y no hay nada que esperar a que aparezca.
+func (a *audience) Left(ctx context.Context, hostID, listenerID uuid.UUID) {
+	a.mu.Lock()
+	if _, listening := a.listeners[hostID][listenerID.String()]; !listening {
+		// No estaba anotado: un aviso repetido, o uno de alguien que nunca llego
+		// a pedir token. Nada que hacer, y desde luego nada que apagar — otro
+		// oyente puede estar escuchando.
+		a.mu.Unlock()
+		return
+	}
+	delete(a.listeners[hostID], listenerID.String())
+	remaining := len(a.listeners[hostID])
+	a.mu.Unlock()
+
+	a.sendListeners(hostID)
+
+	if remaining > 0 {
+		return
+	}
+
+	a.mu.Lock()
+	delete(a.serving, hostID)
+	delete(a.wanted, hostID)
+	delete(a.listeners, hostID)
+	a.mu.Unlock()
+
+	a.presence.Send(hostID, presence.Message{Type: presence.CommandStopBroadcast})
+	slog.InfoContext(ctx, "se fue el ultimo oyente: se le pidio al host que pare",
+		"host", hostID, "oyente", listenerID)
 }
 
 // Forget borra todo lo que se sabia de un host.

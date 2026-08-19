@@ -79,6 +79,7 @@ func New(cfg config.Config, coreClient *core.Client, livekitClient *livekit.Clie
 
 		r.Get("/health", s.health)
 		r.Post("/rooms/join", s.join)
+		r.Post("/rooms/leave", s.leave)
 		// Que amigos estan transmitiendo ahora, ya filtrados por permiso. Es lo
 		// que pinta la pantalla de amigos.
 		r.Get("/rooms/active", s.active)

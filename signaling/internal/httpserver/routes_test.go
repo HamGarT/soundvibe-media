@@ -23,6 +23,7 @@ func TestRutasRegistradas(t *testing.T) {
 	}{
 		{http.MethodGet, "/health"},
 		{http.MethodPost, "/rooms/join"},
+		{http.MethodPost, "/rooms/leave"},
 		{http.MethodGet, "/rooms/active"},
 		{http.MethodGet, "/rooms/broadcast"},
 		{http.MethodGet, "/rooms/presence"},

@@ -24,6 +24,59 @@ type joinRequest struct {
 	HostID string `json:"host_id"`
 }
 
+// leaveRequest es el body de POST /rooms/leave.
+type leaveRequest struct {
+	HostID string `json:"host_id"`
+}
+
+// leave es lo que manda un oyente cuando deja de escuchar.
+//
+// Solo adelanta lo que la reconciliacion haria sola treinta o cuarenta segundos
+// despues. Por eso responde 204 en todos los casos en que la identidad es
+// valida, incluso si ese oyente no figuraba escuchando a ese host: el cliente no
+// tiene nada que hacer con la diferencia, y un error lo unico que provocaria es
+// un reintento inutil mientras se va.
+//
+// No se consulta el permiso de escucha. Dejar de escuchar no es una accion que
+// haga falta autorizar, y pedirle permiso a core para irse le sumaria una
+// llamada al camino de salida sin cambiar el resultado.
+func (s *Server) leave(w http.ResponseWriter, r *http.Request) {
+	accessToken, ok := bearerToken(r)
+	if !ok {
+		fail(w, r, http.StatusUnauthorized, "unauthorized",
+			"falta el access token de soundvibe-core")
+		return
+	}
+
+	var in leaveRequest
+	if r.ContentLength > 0 {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&in); err != nil {
+			fail(w, r, http.StatusBadRequest, "bad_request", "el body no es JSON valido")
+			return
+		}
+	}
+
+	hostID, parseErr := uuid.Parse(strings.TrimSpace(in.HostID))
+	if parseErr != nil {
+		fail(w, r, http.StatusBadRequest, "bad_request", "host_id debe ser un UUID valido")
+		return
+	}
+
+	// Se autentica igual que el join: hace falta saber *quien* se va, y aceptar
+	// un listener_id del body dejaria que cualquiera echara a otro de un room.
+	identity, err := s.core.Introspect(r.Context(), accessToken)
+	if err != nil {
+		s.failCoreError(w, r, err, "no se pudo autenticar el access token")
+		return
+	}
+
+	s.audience.Left(r.Context(), hostID, identity.UserID)
+
+	slog.InfoContext(r.Context(), "oyente se fue",
+		"listener", identity.UserID, "host", hostID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // join es el unico endpoint que importa de este servicio.
 //
 // Secuencia: autenticar contra core -> preguntar el permiso a core -> firmar el
