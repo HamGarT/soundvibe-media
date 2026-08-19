@@ -87,6 +87,11 @@ func (s *Server) presence(w http.ResponseWriter, r *http.Request) {
 	// es core, que tiene el antirrebote.
 	notified := false
 
+	// El ultimo titulo que se le mando a core, para no repetirlo en cada
+	// latido. Un tema dura minutos y el latido son quince segundos: guardar por
+	// latido serian cuatro veces mas escrituras para guardar lo mismo.
+	lastReported := ""
+
 	// La baja limpia. La sucia — el telefono que pierde la red sin cerrar — la
 	// cubre el TTL del store, porque en ese caso este defer no corre nunca.
 	// Al abrir y al cerrar: una conexion nueva empieza de cero, y una que termina
@@ -199,6 +204,37 @@ func (s *Server) presence(w http.ResponseWriter, r *http.Request) {
 			notified = true
 			go notifyLive(s.core, identity, update)
 		}
+
+		// Y lo que suena queda guardado como "lo ultimo que escucho", que es lo
+		// que ven sus amigos cuando ya no esta en vivo. La presencia vive en
+		// memoria y vence a los 45 segundos; esto es lo unico que sobrevive.
+		if update.Title != lastReported {
+			lastReported = update.Title
+			go reportLastPlayed(s.core, identity, update)
+		}
+	}
+}
+
+// reportLastPlayed guarda en core el tema que acaba de empezar.
+//
+// En su propia goroutine y con contexto propio, por lo mismo que notifyLive: el
+// socket no puede esperar a que core conteste, y el contexto de una conexion
+// que se cierra no debe cancelar una escritura ya en camino.
+func reportLastPlayed(client *core.Client, identity core.Identity, update presenceUpdate) {
+	ctx, cancel := context.WithTimeout(context.Background(), notifyLiveTimeout)
+	defer cancel()
+
+	err := client.ReportLastPlayed(ctx, core.LastPlayed{
+		UserID: identity.UserID,
+		Title:  update.Title,
+		Artist: update.Artist,
+		Album:  update.Album,
+	})
+	if err != nil {
+		// Se pierde un dato de adorno, no la sesion: el host sigue en vivo y
+		// sus amigos lo ven igual. La proxima cancion vuelve a intentarlo.
+		slog.Warn("no se pudo guardar la ultima cancion del host",
+			"host", identity.UserID, "error", err)
 	}
 }
 

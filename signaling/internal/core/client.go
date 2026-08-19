@@ -342,6 +342,59 @@ func (c *Client) NotifyLive(ctx context.Context, notice LiveNotice) error {
 	}
 }
 
+// LastPlayed es la cancion que se le guarda a un host como la ultima que
+// escucho.
+type LastPlayed struct {
+	UserID uuid.UUID `json:"user_id"`
+	Title  string    `json:"title"`
+	Artist string    `json:"artist"`
+	Album  string    `json:"album"`
+}
+
+// ReportLastPlayed guarda en core lo que este host esta escuchando, para que
+// sus amigos vean algo cuando ya no este en vivo.
+//
+// La presencia vive en memoria y vence a los 45 segundos, asi que sin esto un
+// amigo que dejo de escuchar hace un rato es una fila con solo un nombre. Core
+// guarda una fila por usuario —lo ultimo, no el historial— y decide al leerla
+// quien puede verla.
+//
+// Best-effort: perder una de estas no rompe nada, la proxima cancion la pisa.
+func (c *Client) ReportLastPlayed(ctx context.Context, played LastPlayed) error {
+	body, err := json.Marshal(played)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.baseURL+"/internal/last-played", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Api-Key", c.apiKey)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	defer drainAndClose(resp)
+
+	switch resp.StatusCode {
+	case http.StatusNoContent, http.StatusOK:
+		return nil
+
+	case http.StatusUnauthorized:
+		return fmt.Errorf(
+			"%w: core rechazo nuestra INTERNAL_API_KEY (revisar que coincida en los dos servicios)",
+			ErrUnavailable)
+
+	default:
+		return fmt.Errorf("%w: core respondio %d en /internal/last-played",
+			ErrUnavailable, resp.StatusCode)
+	}
+}
+
 // Health consulta el /health de core. Solo se usa para diagnostico.
 func (c *Client) Health(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/health", nil)
